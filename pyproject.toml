@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pleiades-asp-workflow"
+version = "0.9.0"
+description = "Notebook-first Pléiades/Pléiades Neo/SPOT DSM workflow with integrated reference-DEM preparation and cross-platform NASA Ames Stereo Pipeline runner."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    {name = "Islam Koa"}
+]
+keywords = [
+    "Ames Stereo Pipeline",
+    "ASP",
+    "Pleiades",
+    "Pleiades Neo",
+    "SPOT",
+    "photogrammetry",
+    "DSM",
+    "remote sensing",
+    "LiDAR",
+]
+
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "rasterio",
+    "pyproj",
+    "geopandas",
+    "shapely",
+    "affine",
+    "scipy",
+    "xmltodict",
+    "openpyxl",
+    "xlrd",
+    "jupyterlab",
+    "notebook",
+    "ipykernel",
+    "ipywidgets",
+]
+
+[project.optional-dependencies]
+rpc = [
+    "rpcm==1.4.10",
+]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+asp-install = "pleiades_asp_runner.installer:install_cli"
+asp-info = "pleiades_asp_runner.installer:info_cli"
+asp-doctor = "pleiades_asp_runner.installer:doctor_cli"
+asp-clean = "pleiades_asp_runner.installer:clean_cli"
+asp-version = "pleiades_asp_runner.installer:version_cli"
+
+bundle_adjust = "pleiades_asp_runner.cli:main"
+parallel_stereo = "pleiades_asp_runner.cli:main"
+point2dem = "pleiades_asp_runner.cli:main"
+pc_align = "pleiades_asp_runner.cli:main"
+mapproject = "pleiades_asp_runner.cli:main"
+pc_merge = "pleiades_asp_runner.cli:main"
+dem_geoid = "pleiades_asp_runner.cli:main"
+
+pleiades-workflow-init = "pleiades_asp_workflow.workspace:init_cli"
+pleiades-workflow-info = "pleiades_asp_workflow.workspace:info_cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pleiades_asp_workflow = [
+    "interface_bundle/*.py",
+    "interface_bundle/*.ipynb",
+    "interface_bundle/*.txt",
+    "interface_bundle/data/*",
+    "interface_bundle/figures/*",
+]

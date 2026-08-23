@@ -1,0 +1,11 @@
+ipywidgets
+geopandas
+shapely
+rpcm
+rasterio
+pyproj
+affine
+scipy
+numpy
+pandas
+matplotlib
