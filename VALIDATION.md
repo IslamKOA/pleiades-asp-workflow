@@ -50,3 +50,11 @@ Lower-third non-white fraction: `0.462`
 
 The v1.0.6 interface only loads this new filename, which prevents an older
 workspace copy of `overview_mountain_page1.png` from being displayed.
+
+## Public notebook startup-cell presentation
+
+- Cover badge displays `Notebook software v1.0.6`.
+- The startup code cell remains executable but its input strip is fully suppressed in the public notebook.
+- Startup-cell outputs remain visible so the interactive workflow UI is unaffected.
+- The developer notebook is unchanged.
+- No scientific ASP, Reference DEM, stereo, alignment, map-projection, or DSM logic was modified.
