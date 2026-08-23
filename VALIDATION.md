@@ -74,3 +74,9 @@ workspace copy of `overview_mountain_page1.png` from being displayed.
 - The geoid preview is saved as `Figure/reference_geoid_preview.png` and `.pdf`.
 - If no vertical conversion is requested, the tab explicitly reports that the correction is not applied.
 - ASP and Reference DEM generation logic are unchanged; this is a QC/visualization addition only.
+
+## Geoid QC result-key correction
+
+- The Geoid / Vertical QC tab now reads the actual prepared-reference result keys: `alignment_n` and `map_n`.
+- This fixes the false `Vertical conversion: Not applied` message when RAF20/EGM conversion was in fact performed.
+- Vertical conversion, DEM generation, and saved reference products are unchanged.

@@ -2,6 +2,12 @@
 
 ## 1.0.6 — Final notebook presentation and release cleanup
 
+### Geoid QC wiring fix
+
+- Fixed the Geoid / Vertical QC tab to use the prepared result keys `alignment_n` and `map_n`.
+- Prevents a false `Not applied` status after successful vertical conversion.
+- No vertical-reference or DEM-processing logic changed.
+
 ### Reference QC enhancement — geoid / vertical correction
 
 - Added a third `Geoid / Vertical` tab to the pre-ASP reference QC gate.

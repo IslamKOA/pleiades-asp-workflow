@@ -2175,11 +2175,11 @@ def _plot_reference_geoid_qc(
     candidates = [
         (
             "Alignment reference",
-            result.get("alignment_geoid_model_raster"),
+            result.get("alignment_n"),
         ),
         (
             "Map-projection reference",
-            result.get("map_geoid_model_raster"),
+            result.get("map_n"),
         ),
     ]
 

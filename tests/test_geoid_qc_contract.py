@@ -13,8 +13,8 @@ def test_geoid_qc_tab_exists():
 
 def test_geoid_qc_uses_actual_prepared_rasters():
     text = UI.read_text(encoding="utf-8")
-    assert 'result.get("alignment_geoid_model_raster")' in text
-    assert 'result.get("map_geoid_model_raster")' in text
+    assert 'result.get("alignment_n")' in text
+    assert 'result.get("map_n")' in text
     assert "def _plot_reference_geoid_qc" in text
 
 
@@ -36,3 +36,10 @@ def test_geoid_qc_reports_n_statistics():
     assert '"N min"' in text
     assert '"N max"' in text
     assert '"N mean"' in text
+
+
+
+def test_geoid_qc_does_not_use_config_only_key_names():
+    text = UI.read_text(encoding="utf-8")
+    assert 'result.get("alignment_geoid_model_raster")' not in text
+    assert 'result.get("map_geoid_model_raster")' not in text
