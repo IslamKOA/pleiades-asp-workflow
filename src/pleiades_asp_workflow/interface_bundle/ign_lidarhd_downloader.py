@@ -28,6 +28,7 @@ import csv
 import json
 import math
 import shutil
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -43,7 +44,7 @@ from rasterio.features import geometry_mask
 from rasterio.transform import from_origin
 from rasterio.warp import calculate_default_transform, reproject
 from rasterio.windows import Window, from_bounds
-from shapely.geometry import mapping
+from shapely.geometry import mapping, box
 
 
 LAMBERT93 = "EPSG:2154"
@@ -130,17 +131,25 @@ def _selection_geometry(
     download_buffer: bool,
     buffer_distance_m: float,
 ) -> gpd.GeoDataFrame:
-    """Build the geometry used to select downloadable tiles."""
+    """
+    Build the IGN tile-selection geometry.
+
+    Buffered mode uses the AOI bounding box expanded on all four sides.
+    This includes the corner tiles needed by the rectangular ASP reference.
+    """
     if buffer_distance_m < 0:
         raise ValueError("buffer_distance_m must be zero or positive.")
 
+    minx, miny, maxx, maxy = [float(v) for v in aoi_l93.total_bounds]
+
     if download_buffer:
-        geometry = aoi_l93.geometry.buffer(buffer_distance_m)
+        d = float(buffer_distance_m)
+        geometry = box(minx - d, miny - d, maxx + d, maxy + d)
     else:
-        geometry = aoi_l93.geometry.copy()
+        geometry = box(minx, miny, maxx, maxy)
 
     return gpd.GeoDataFrame(
-        {"geometry": geometry},
+        {"geometry": [geometry]},
         crs=LAMBERT93,
     )
 
@@ -277,8 +286,9 @@ def _download_one_tile(
     record: TileRecord,
     tile_dir: Path,
     overwrite: bool = False,
+    attempts: int = 3,
 ) -> Path:
-    """Download one tile atomically, or reuse a non-empty cached file."""
+    """Download one tile atomically, retrying transient IGN WMS failures."""
     tile_dir.mkdir(parents=True, exist_ok=True)
     out_path = tile_dir / record.name_download
 
@@ -287,31 +297,44 @@ def _download_one_tile(
         return out_path
 
     temporary_path = out_path.with_suffix(out_path.suffix + ".part")
+    last_error = None
 
-    if temporary_path.exists():
-        temporary_path.unlink()
-
-    print(f"Downloading: {record.name_download}")
-
-    request = urllib.request.Request(
-        record.url,
-        headers={"User-Agent": "IGN-LiDARHD-Python-workflow/1.0"},
-    )
-
-    try:
-        with urllib.request.urlopen(request, timeout=300) as response:
-            with temporary_path.open("wb") as destination:
-                shutil.copyfileobj(response, destination)
-    except Exception:
+    for attempt in range(1, max(1, int(attempts)) + 1):
         if temporary_path.exists():
             temporary_path.unlink()
-        raise
 
-    if not temporary_path.exists() or temporary_path.stat().st_size == 0:
-        raise RuntimeError(f"Downloaded tile is empty: {record.name_download}")
+        suffix = "" if attempt == 1 else f" (retry {attempt}/{attempts})"
+        print(f"Downloading: {record.name_download}{suffix}")
 
-    temporary_path.replace(out_path)
-    return out_path
+        request = urllib.request.Request(
+            record.url,
+            headers={"User-Agent": "IGN-LiDARHD-Python-workflow/1.0"},
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                with temporary_path.open("wb") as destination:
+                    shutil.copyfileobj(response, destination)
+
+            if not temporary_path.exists() or temporary_path.stat().st_size == 0:
+                raise RuntimeError(
+                    f"Downloaded tile is empty: {record.name_download}"
+                )
+
+            temporary_path.replace(out_path)
+            return out_path
+
+        except Exception as error:
+            last_error = error
+            if temporary_path.exists():
+                temporary_path.unlink()
+
+            if attempt < attempts:
+                time.sleep(2 * attempt)
+
+    raise RuntimeError(
+        f"download failed after {attempts} attempts: {last_error}"
+    )
 
 
 def _download_tiles(
@@ -988,6 +1011,19 @@ def download_ign_lidarhd_dsm(
     print(f"\nMosaicking {len(coarse_paths)} coarse MNS tiles...")
     mosaic, mosaic_transform, mosaic_crs = _mosaic_mean(coarse_paths)
 
+    # Keep the complete mosaic of all selected buffered IGN tiles.
+    # This is the preferred source for the integrated ASP reference DEMs.
+    selected_tiles_mosaic_out = (
+        final_dir
+        / f"DSM_MNS_LiDARHD_{target_res:g}m_SELECTED_TILES_EPSG2154.tif"
+    )
+    _write_float_raster(
+        out_path=selected_tiles_mosaic_out,
+        array=mosaic,
+        transform=mosaic_transform,
+        crs=mosaic_crs,
+    )
+
     bbox_array, bbox_transform = _crop_array_to_aoi_bbox(
         array=mosaic,
         transform=mosaic_transform,
@@ -1069,6 +1105,7 @@ def download_ign_lidarhd_dsm(
     outputs: dict[str, Path] = {
         "aoi_lambert93": aoi_out,
         "selected_tile_index": selected_index_out,
+        "selected_tiles_mosaic_epsg2154": selected_tiles_mosaic_out,
         "tile_statistics": statistics_csv,
         "bbox_epsg2154": bbox_out,
         "masked_epsg2154": masked_out,

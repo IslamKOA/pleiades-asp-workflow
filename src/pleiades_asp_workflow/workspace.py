@@ -7,7 +7,7 @@ import shutil
 
 from . import __version__
 
-DEFAULT_DIRECTORY = "Pleiades_ASP_Workflow"
+DEFAULT_DIRECTORY = Path.home() / "Pleiades_ASP_Workflow"
 
 # End-user runtime files. Developer/reference material remains available in the
 # installed package but is not copied into a normal workspace unless requested.
@@ -22,6 +22,7 @@ RUNTIME_ITEMS = (
     "requirements_interface.txt",
     "figures",
     "data",
+    "examples",
 )
 
 DEVELOPER_ITEMS = (
@@ -94,7 +95,7 @@ def init_cli() -> None:
         "directory",
         nargs="?",
         default=DEFAULT_DIRECTORY,
-        help=f"Destination directory (default: ./{DEFAULT_DIRECTORY})",
+        help=f"Destination directory (default: {DEFAULT_DIRECTORY})",
     )
     parser.add_argument(
         "--force",

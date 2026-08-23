@@ -1,28 +1,52 @@
-# Candidate validation report
+# Validation — Pléiades ASP Workflow v1.0.6
 
-Release: v0.9.0
+This final package is based on v1.0.4 and keeps its scientific ASP/reference
+processing logic unchanged.
 
-Validated locally without downloading ASP or external DEM data:
+## Notebook figure fix
 
-- Python syntax/compile validation for all notebook runtime modules.
-- Notebook JSON and version-guard validation.
-- Reference DEM panel ordering and France/default behavior validated statically.
-- Original pre-processing, point-cloud and final DSM default settings preserved.
-- ASP runner exposes `pc_merge` and `dem_geoid` in addition to the original commands.
-- A wheel was built successfully from `pyproject.toml`.
-- The wheel was installed with `--no-deps` in a clean virtual environment.
-- `pleiades-workflow-init` successfully materialized the complete notebook workspace.
-- All materialized runtime Python modules compiled successfully.
-- `pleiades-workflow-info` executed successfully.
-- `asp-version` executed successfully and reported the reproducible default ASP 3.3.0.
-- All runtime/publication figures are stored under one `figures/` directory in the materialized interface.
+The Metadata and geometry concept figure now uses responsive HTML instead of
+`ipywidgets.Image`.
 
-Not executed in this offline candidate test:
+Original PNG: `6116 × 2433 px`
 
-- ASP binary download/install.
-- Live IGN LiDAR HD download.
-- Live Copernicus/SRTM download.
-- Live PROJ geoid-grid download.
-- A complete stereo/DSM run.
+Notebook PNG: `1800 × 716 px`
 
-These network/runtime operations should be tested on the target workstation before the public GitHub release.
+The full-quality PDF remains:
+
+`figures/Overview_mountain.pdf`
+
+## Example outputs
+
+The provisional reconstructed example images were removed. `examples/` contains
+only a README placeholder until real saved workflow outputs are copied there.
+
+## Checks performed
+
+- Python source compilation
+- Notebook JSON/version checks
+- Existing package tests
+- Reference DEM contract tests
+- Workspace materialization test
+- Responsive figure-rendering contract test
+- Wheel build
+- Wheel package-data verification
+
+Live ASP processing and live IGN/global DEM downloads still require validation
+on the target server/workstation.
+
+
+## v1.0.6 concept-figure verification
+
+Dedicated runtime asset:
+
+`figures/overview_mountain_notebook.png`
+
+Dimensions: `1743 × 716 px`
+
+Detected non-white content bbox: `(19, 17, 1725, 698)`
+
+Lower-third non-white fraction: `0.462`
+
+The v1.0.6 interface only loads this new filename, which prevents an older
+workspace copy of `overview_mountain_page1.png` from being displayed.

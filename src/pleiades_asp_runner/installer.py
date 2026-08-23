@@ -12,7 +12,7 @@ import tarfile
 import urllib.request
 from pathlib import Path, PureWindowsPath
 
-PACKAGE_VERSION = "0.9.0"
+PACKAGE_VERSION = "1.0.6"
 DEFAULT_ASP_VERSION = "3.3.0"
 
 REQUIRED_TOOLS = (

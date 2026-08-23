@@ -33,7 +33,7 @@ from pleiades_asp_runner import (
     runtime_to_host_path,
 )
 
-__version__ = "0.9.0"
+__version__ = "1.0.6"
 
 
 def _runtime_source_path(path):
@@ -1500,6 +1500,18 @@ def _plot_georeferenced_image_panels(
             transparent=False,
         )
 
+        output_png = Path(output_pdf).with_suffix(".png")
+        fig.savefig(
+            output_png,
+            format="png",
+            dpi=max(200, int(dpi)),
+            bbox_inches="tight",
+            pad_inches=pdf_pad_inches,
+            facecolor="white",
+            edgecolor="none",
+            transparent=False,
+        )
+
         if show:
             plt.show()
         else:
@@ -2927,6 +2939,18 @@ def plot_final_dsm(
             transparent=False,
         )
 
+        output_png = Path(output_pdf).with_suffix(".png")
+        fig.savefig(
+            output_png,
+            format="png",
+            dpi=max(200, int(dpi)),
+            bbox_inches="tight",
+            pad_inches=pdf_pad_inches,
+            facecolor="white",
+            edgecolor="none",
+            transparent=False,
+        )
+
         print(
             "\nSelected configuration:"
         )
@@ -4211,6 +4235,18 @@ def plot_final_dsm_accuracy_figure(
             output_pdf,
             format="pdf",
             dpi=dpi,
+            bbox_inches="tight",
+            pad_inches=pdf_pad_inches,
+            facecolor="white",
+            edgecolor="none",
+            transparent=False,
+        )
+
+        output_png = Path(output_pdf).with_suffix(".png")
+        fig.savefig(
+            output_png,
+            format="png",
+            dpi=max(200, int(dpi)),
             bbox_inches="tight",
             pad_inches=pdf_pad_inches,
             facecolor="white",

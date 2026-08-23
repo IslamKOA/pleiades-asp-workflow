@@ -13,6 +13,7 @@ Version 0.5
 from __future__ import annotations
 
 import html
+import base64
 import json
 import os
 import shutil
@@ -36,7 +37,7 @@ from rasterio.enums import Resampling
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.windows import Window
 
-DEV_VERSION = "0.9.0"
+DEV_VERSION = "1.0.6"
 
 
 # ============================================================
@@ -887,17 +888,15 @@ class ProjectSetupUI:
         self.stage2_tables_box = widgets.VBox()
         # Persistent concept-figure container.
         #
-        # A widgets.Image keeps the PNG bytes in widget state. This is more
-        # stable than rendering the image through widgets.Output during
-        # interface construction.
-        self.concept_figure = widgets.VBox(
+        # Render through responsive HTML rather than ipywidgets.Image.
+        # Some Jupyter frontends clip the vertical extent of very wide Image
+        # widgets, which makes the figure appear incomplete.
+        self.concept_figure = widgets.HTML(
+            value="",
             layout=widgets.Layout(
-                border="1px solid #ddd",
-                padding="6px",
                 width="100%",
                 margin="4px 0 12px 0",
-                align_items="center",
-            )
+            ),
         )
 
         self.common_rows = [
@@ -958,36 +957,54 @@ class ProjectSetupUI:
 
     def _display_concept_figure(self):
         """
-        Display the stereo/tri-stereo concept figure persistently.
+        Display the complete stereo/tri-stereo concept figure responsively.
 
-        The PNG bytes are stored directly in an ipywidgets.Image so the figure
-        remains visible after the full interface finishes rendering.
+        The PNG is embedded as a data URI in an HTML <img> element so its
+        complete aspect ratio is preserved across JupyterLab/Notebook
+        frontends.
         """
         module_dir = Path(__file__).resolve().parent
 
         candidates = [
-            module_dir / "figures" / "overview_mountain_page1.png",
-            Path.cwd() / "figures" / "overview_mountain_page1.png",
+            module_dir / "figures" / "overview_mountain_notebook.png",
+            Path.cwd() / "figures" / "overview_mountain_notebook.png",
         ]
 
         img_path = next(
-            (path for path in candidates if path.is_file()),
+            (
+                path
+                for path in candidates
+                if path.is_file()
+            ),
             None,
         )
 
         if img_path is not None:
-            image_widget = self.widgets.Image(
-                value=img_path.read_bytes(),
-                format="png",
-                layout=self.widgets.Layout(
-                    width="100%",
-                    max_width="1500px",
-                    height="auto",
-                ),
-            )
+            encoded = base64.b64encode(
+                img_path.read_bytes()
+            ).decode("ascii")
 
-            self.concept_figure.children = (
-                image_widget,
+            self.concept_figure.value = (
+                "<div style='"
+                "box-sizing:border-box;"
+                "width:100%;"
+                "border:1px solid #ddd;"
+                "padding:8px;"
+                "background:#fff;"
+                "overflow:visible;"
+                "'>"
+                "<img "
+                f"src='data:image/png;base64,{encoded}' "
+                "alt='Stereo and tri-stereo acquisition geometry' "
+                "style='"
+                "display:block;"
+                "width:100%;"
+                "height:auto;"
+                "max-width:1500px;"
+                "margin:0 auto;"
+                "object-fit:contain;""max-height:none;""min-height:0;"
+                "'>"
+                "</div>"
             )
 
         else:
@@ -996,24 +1013,18 @@ class ProjectSetupUI:
                 for path in candidates
             )
 
-            warning = self.widgets.HTML(
-                value=(
-                    "<div style='padding:10px 12px;"
-                    "border-left:4px solid #d58b00;"
-                    "background:#fffaf0;color:#555;width:100%;'>"
-                    "<b>Concept figure not found.</b><br>"
-                    "Expected software asset: "
-                    "<code>overview_mountain_page1.png</code>.<br>"
-                    "Keep all software figures inside the <code>figures/</code> folder.<br><br>"
-                    "<b>Searched:</b><br>"
-                    f"{searched}"
-                    "</div>"
-                )
+            self.concept_figure.value = (
+                "<div style='padding:10px 12px;"
+                "border-left:4px solid #d58b00;"
+                "background:#fffaf0;color:#555;width:100%;'>"
+                "<b>Concept figure not found.</b><br>"
+                "Expected: "
+                "<code>figures/overview_mountain_notebook.png</code>.<br><br>"
+                "<b>Searched:</b><br>"
+                f"{searched}"
+                "</div>"
             )
 
-            self.concept_figure.children = (
-                warning,
-            )
 
     def _build_settings(self):
         project_name = self.project_name.value.strip()
@@ -1047,7 +1058,7 @@ class ProjectSetupUI:
             active_lines = "<br>".join(f"<code>{name}: {html.escape(str(path))}</code>" for name, path in result['active_images'].items())
             crop_text = "AOI crop created; cropped images are active." if settings.crop_enabled else "AOI crop not requested; full prepared images are active."
             self.stage1_summary.value = ("<div style='margin:10px 0;padding:10px;border-left:4px solid #2e7d32;background:#f4fbf4;'>"
-                                         "<b>✓ Prepare data completed.</b><br>" + html.escape(crop_text) + "<br><br><b>Active images:</b><br>" + active_lines + "<br><br><b>Preview:</b> <code>" + html.escape(str(result['preview']['png'])) + "</code><br><b>Detailed log:</b> <code>" + html.escape(str(result['log_path'])) + "</code></div>")
+                                         "<b>✓ Prepare data completed.</b><br>" + html.escape(crop_text) + "<br><br><b>Active images:</b><br>" + active_lines + "<br><br><b>Preview PNG:</b> <code>" + html.escape(str(result['preview']['png'])) + "</code><br><b>Preview PDF:</b> <code>" + html.escape(str(result['preview']['pdf'])) + "</code><br><b>Detailed log:</b> <code>" + html.escape(str(result['log_path'])) + "</code></div>")
             with self.stage1_preview:
                 self.display_fn(result['preview']['figure'])
             plt.close(result['preview']['figure'])
@@ -2087,6 +2098,73 @@ def _read_dem_preview(
     return array, bounds, crs
 
 
+
+def _plot_reference_dem_from_path(
+    settings: ProjectSettings,
+    dem_path: Path,
+    role_label: str,
+    filename_stem: str,
+):
+    """Plot the actual prepared reference DEM before any ASP stage starts."""
+    dem_path = Path(dem_path)
+    dem, bounds, crs = _read_dem_preview(dem_path)
+    valid = dem.compressed()
+    if valid.size == 0:
+        raise ValueError(f"The prepared reference DEM has no valid values:\n{dem_path}")
+
+    p2, p98 = np.percentile(valid, [2, 98])
+    actual_min = float(np.min(valid))
+    actual_max = float(np.max(valid))
+    filled = dem.filled(float(np.median(valid)))
+    hillshade = LightSource(azdeg=315, altdeg=45).hillshade(filled, vert_exag=1.0)
+    hillshade = np.ma.array(hillshade, mask=np.ma.getmaskarray(dem))
+    extent = [bounds.left, bounds.right, bounds.bottom, bounds.top]
+
+    fig, ax = plt.subplots(figsize=(9.2, 7.2))
+    image = ax.imshow(
+        dem, extent=extent, origin="upper", cmap="terrain", vmin=p2, vmax=p98
+    )
+    ax.imshow(
+        hillshade, extent=extent, origin="upper", cmap="gray", alpha=0.22
+    )
+    cb = fig.colorbar(image, ax=ax, shrink=0.82, pad=0.025)
+    cb.set_label("Elevation (m)")
+    ax.set_title(f"{settings.project_name} — {role_label}")
+    if crs is not None and crs.is_geographic:
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+    else:
+        ax.set_xlabel("Easting (m)")
+        ax.set_ylabel("Northing (m)")
+    ax.set_aspect("equal")
+    ax.grid(True, color="white", alpha=0.20, linewidth=0.5, linestyle="--")
+    fig.tight_layout()
+
+    settings.figure_dir.mkdir(parents=True, exist_ok=True)
+    png = settings.figure_dir / f"{filename_stem}.png"
+    pdf = settings.figure_dir / f"{filename_stem}.pdf"
+    fig.savefig(png, dpi=200, bbox_inches="tight")
+    fig.savefig(pdf, dpi=300, bbox_inches="tight")
+
+    with rasterio.open(dem_path) as src:
+        summary = {
+            "Path": str(dem_path),
+            "CRS": src.crs.to_string() if src.crs else "",
+            "Width": int(src.width),
+            "Height": int(src.height),
+            "Pixel X": abs(float(src.transform.a)),
+            "Pixel Y": abs(float(src.transform.e)),
+            "Left": float(src.bounds.left),
+            "Right": float(src.bounds.right),
+            "Bottom": float(src.bounds.bottom),
+            "Top": float(src.bounds.top),
+            "Elevation min": actual_min,
+            "Elevation max": actual_max,
+            "NoData": src.nodata,
+        }
+    return {"figure": fig, "png": png, "pdf": pdf, "summary": summary}
+
+
 def _plot_preliminary_dem_from_path(
     settings: ProjectSettings,
     dem_path: Path,
@@ -2292,13 +2370,17 @@ def _read_map_image_preview(
 def _plot_mapprojected_from_paths(
     settings: ProjectSettings,
     mapprojected: Dict[str, Path],
+    target_epsg: int,
 ):
     """
-    Plot all map-projected images using:
-    - one common spatial extent,
-    - a shared y-axis,
-    - plain coordinate labels (no 1e6 scientific offset),
-    - fewer, readable x ticks.
+    Plot the map-projected images using the common spatial intersection.
+
+    This intentionally reproduces the tested publication/QC behavior from
+    the original workflow: only the area shared by all views is displayed.
+    The underlying mapproject GeoTIFFs are not cropped or modified.
+
+    Before plotting, every output CRS is checked against the Target CRS
+    (EPSG) selected under Advanced pre-processing.
     """
     from matplotlib.ticker import FuncFormatter, MaxNLocator
 
@@ -2312,35 +2394,65 @@ def _plot_mapprojected_from_paths(
         for view in settings.image_names
     ]
 
-    all_left = [
+    expected_epsg = int(target_epsg)
+    for view, item in prepared:
+        crs = item["crs"]
+        if crs is None:
+            raise ValueError(
+                "No CRS is defined for map-projected image "
+                f"{view}: {mapprojected[view]}"
+            )
+
+        output_epsg = crs.to_epsg()
+        if output_epsg != expected_epsg:
+            raise ValueError(
+                "Map-projected image CRS does not match the selected "
+                "Target CRS.\n"
+                f"Image {view}: {mapprojected[view]}\n"
+                f"Image CRS: {crs.to_string()}\n"
+                f"Expected: EPSG:{expected_epsg}"
+            )
+
+    # Common INTERSECTION, matching the tested original plotting function.
+    common_left = max(
         item["bounds"].left
         for _, item in prepared
-    ]
-    all_right = [
+    )
+    common_right = min(
         item["bounds"].right
         for _, item in prepared
-    ]
-    all_bottom = [
+    )
+    common_bottom = max(
         item["bounds"].bottom
         for _, item in prepared
-    ]
-    all_top = [
+    )
+    common_top = min(
         item["bounds"].top
         for _, item in prepared
-    ]
+    )
+
+    if (
+        common_left >= common_right
+        or common_bottom >= common_top
+    ):
+        raise ValueError(
+            "The map-projected images do not have a common "
+            "projected extent."
+        )
 
     common_extent = [
-        min(all_left),
-        max(all_right),
-        min(all_bottom),
-        max(all_top),
+        common_left,
+        common_right,
+        common_bottom,
+        common_top,
     ]
 
     fig, axes = plt.subplots(
         1,
         len(prepared),
-        figsize=(5.2 * len(prepared), 6.4),
+        figsize=(5.0 * len(prepared), 6.3),
         squeeze=False,
+        sharex=True,
         sharey=True,
     )
     axes = axes.ravel()
@@ -2361,18 +2473,24 @@ def _plot_mapprojected_from_paths(
         common_x_label = "Longitude"
         common_y_label = "Latitude"
     else:
+        # Full projected coordinates, no scientific notation or offset.
         coordinate_formatter = FuncFormatter(
-            lambda value, position: f"{value:,.0f}"
+            lambda value, position: f"{value:.0f}"
         )
         common_x_label = "Easting (m)"
         common_y_label = "Northing (m)"
+
+    view_labels = {
+        "A": "A — Forward",
+        "B": "B — Near-nadir",
+        "C": "C — Backward",
+    }
 
     for ax, (view, item) in zip(
         axes,
         prepared,
     ):
         bounds = item["bounds"]
-
         extent = [
             bounds.left,
             bounds.right,
@@ -2385,6 +2503,8 @@ def _plot_mapprojected_from_paths(
             extent=extent,
             origin="upper",
             cmap=cmap,
+            interpolation="nearest",
+            rasterized=True,
         )
 
         ax.set_xlim(
@@ -2395,9 +2515,13 @@ def _plot_mapprojected_from_paths(
             common_extent[2],
             common_extent[3],
         )
+        ax.set_aspect("equal")
 
         ax.set_title(
-            f"{view} — map-projected"
+            view_labels.get(
+                view,
+                f"{view} — map-projected",
+            )
         )
 
         ax.grid(
@@ -2408,53 +2532,41 @@ def _plot_mapprojected_from_paths(
             linestyle="--",
         )
 
-        # Keep only a few coordinate labels so they do not overlap.
         ax.xaxis.set_major_locator(
-            MaxNLocator(nbins=5)
-        )
-        ax.yaxis.set_major_locator(
             MaxNLocator(nbins=6)
         )
-
+        ax.yaxis.set_major_locator(
+            MaxNLocator(nbins=7)
+        )
         ax.xaxis.set_major_formatter(
             coordinate_formatter
         )
         ax.yaxis.set_major_formatter(
             coordinate_formatter
         )
-
         ax.tick_params(
             axis="x",
-            labelrotation=30,
+            labelrotation=0,
             labelsize=8.5,
         )
         ax.tick_params(
             axis="y",
             labelsize=8.5,
         )
+        ax.set_xlabel(common_x_label)
 
-        # Shared labels are added once below.
-        ax.set_xlabel("")
-        ax.set_ylabel("")
-
-    fig.supxlabel(
-        common_x_label,
-        y=0.035,
-    )
-    fig.supylabel(
-        common_y_label,
-        x=0.015,
-    )
+    axes[0].set_ylabel(common_y_label)
 
     fig.suptitle(
-        f"{settings.project_name} — "
+        f"{settings.project_name}: "
         "map-projected image alignment"
     )
+    fig.tight_layout(rect=(0.02, 0.02, 1, 0.96))
 
-    fig.tight_layout(
-        rect=(0.035, 0.065, 1, 0.96)
+    settings.figure_dir.mkdir(
+        parents=True,
+        exist_ok=True,
     )
-
     png = (
         settings.figure_dir
         / "mapprojected_images_preview.png"
@@ -2468,17 +2580,21 @@ def _plot_mapprojected_from_paths(
         png,
         dpi=200,
         bbox_inches="tight",
+        facecolor="white",
     )
     fig.savefig(
         pdf,
         dpi=300,
         bbox_inches="tight",
+        facecolor="white",
     )
 
     return {
         "figure": fig,
         "png": png,
         "pdf": pdf,
+        "target_epsg": expected_epsg,
+        "common_extent": common_extent,
     }
 
 
@@ -3065,6 +3181,7 @@ def run_pre_processing(
                 _plot_mapprojected_from_paths(
                     settings,
                     paths["mapprojected"],
+                    processing.target_epsg,
                 )
             )
 
@@ -3080,6 +3197,7 @@ def run_pre_processing(
                     "table": map_table,
                     "plot": map_plot,
                     "mapproject_dem": mapproject_dem,
+                    "target_epsg": processing.target_epsg,
                     "outputs": paths["mapprojected"],
                     "logs": paths["mapproject_logs"],
                 },
@@ -4582,10 +4700,48 @@ class FullProjectSetupUI(ProjectSetupUI):
         self.reference_dem_status = widgets.HTML(
             value=(
                 "<div style='margin:5px 0 8px 0;color:#666;'>"
-                "Reference DEMs will be prepared when pre-processing starts."
+                "Prepare and inspect the two reference DEMs before starting bundle adjustment."
                 "</div>"
             )
         )
+
+        self.prepare_reference_dems = widgets.Button(
+            description="1. Prepare & check reference DEMs",
+            button_style="info",
+            icon="eye",
+            layout=widgets.Layout(width="330px", height="42px"),
+        )
+        self.reference_dem_progress = widgets.IntProgress(
+            value=0, min=0, max=100, description="Ref DEM:",
+            style={"description_width": "80px"},
+            layout=widgets.Layout(width="720px"),
+        )
+        self.reference_dem_progress_text = widgets.HTML(
+            "<span style='color:#666;'>Waiting.</span>"
+        )
+        self.reference_dem_qc_outputs = {
+            "alignment": widgets.Output(layout=widgets.Layout(width="100%", min_height="120px")),
+            "mapproject": widgets.Output(layout=widgets.Layout(width="100%", min_height="120px")),
+        }
+        self.reference_dem_qc_tabs = widgets.Tab(children=[
+            self.reference_dem_qc_outputs["alignment"],
+            self.reference_dem_qc_outputs["mapproject"],
+        ])
+        self.reference_dem_qc_tabs.set_title(0, "Alignment DEM")
+        self.reference_dem_qc_tabs.set_title(1, "Map-projection DEM")
+        self.reference_dem_qc_tabs.layout.display = "none"
+        self.reference_dem_gate_note = widgets.HTML(
+            value=(
+                "<div style='margin:5px 0 10px 0;padding:8px 10px;"
+                "border-left:3px solid #336699;background:#f7f9fc;"
+                "color:#555;max-width:850px;font-size:12px;line-height:1.45;'>"
+                "<b>QC gate:</b> ASP has not started yet. Inspect both DEM tabs. "
+                "Only then run step 2. If a DEM is wrong, change the reference "
+                "settings and prepare again."
+                "</div>"
+            )
+        )
+        self._reference_dem_ready = False
 
         self.target_epsg = widgets.IntText(
             value=32632,
@@ -4797,13 +4953,11 @@ class FullProjectSetupUI(ProjectSetupUI):
         )
 
         self.run_preprocessing = widgets.Button(
-            description="Run pre-processing",
+            description="2. Run ASP pre-processing",
             button_style="warning",
             icon="cogs",
-            layout=widgets.Layout(
-                width="260px",
-                height="42px",
-            ),
+            disabled=True,
+            layout=widgets.Layout(width="290px", height="42px"),
         )
 
         self.preprocess_progress = (
@@ -5232,6 +5386,15 @@ class FullProjectSetupUI(ProjectSetupUI):
         preprocessing_rows = [
             self.reference_dem_settings,
             self.reference_dem_status,
+            self.prepare_reference_dems,
+            self.reference_dem_progress,
+            self.reference_dem_progress_text,
+            self.reference_dem_gate_note,
+            self.reference_dem_qc_tabs,
+            widgets.HTML(
+                "<hr style='margin:14px 0 12px 0;'>"
+                "<b>ASP pre-processing settings</b>"
+            ),
             self._row(
                 self.map_resolution,
                 "Mapproject image resolution. "
@@ -5354,6 +5517,10 @@ class FullProjectSetupUI(ProjectSetupUI):
         # ----------------------------------------------------
         # EVENTS
         # ----------------------------------------------------
+        self.prepare_reference_dems.on_click(
+            self._on_prepare_reference_dems
+        )
+
         self.run_preprocessing.on_click(
             self._on_pre_processing
         )
@@ -5433,6 +5600,19 @@ class FullProjectSetupUI(ProjectSetupUI):
             names="value",
         )
 
+        for _ref_widget in (
+            self.reference_region, self.reference_aoi, self.reference_map_source,
+            self.reference_map_resolution, self.reference_existing_map,
+            self.reference_existing_map_convert, self.reference_alignment_source,
+            self.reference_alignment_resolution, self.reference_existing_alignment,
+            self.reference_existing_alignment_convert, self.reference_geoid_model,
+            self.reference_custom_n, self.reference_global_buffer,
+            self.reference_ign_buffer, self.reference_ign_workers, self.target_epsg,
+        ):
+            _ref_widget.observe(
+                self._invalidate_reference_dem_preparation, names="value"
+            )
+
         self._configure_reference_dem_controls()
 
         # Initialize advanced preliminary-stereo controls first.
@@ -5451,9 +5631,10 @@ class FullProjectSetupUI(ProjectSetupUI):
             widgets.HTML(
                 "<hr><h4>Pre-processing</h4>"
                 "<div style='color:#666;margin-bottom:8px;'>"
-                "Bundle adjustment → preliminary stereo → "
-                "preliminary DSM → LiDAR alignment → "
-                "apply transform to cameras → map projection."
+                "First prepare and visually check the alignment and map-projection "
+                "reference DEMs. ASP then runs: bundle adjustment → preliminary "
+                "stereo → preliminary DSM → LiDAR alignment → apply transform "
+                "to cameras → map projection."
                 "</div>"
             ),
             *preprocessing_rows,
@@ -6671,6 +6852,151 @@ class FullProjectSetupUI(ProjectSetupUI):
     # --------------------------------------------------------
     # PROGRESS
     # --------------------------------------------------------
+    def _set_reference_dem_progress(self, value, message):
+        self.reference_dem_progress.value = int(value)
+        self.reference_dem_progress_text.value = (
+            "<span style='color:#555;'>" + html.escape(message) + "</span>"
+        )
+
+    def _invalidate_reference_dem_preparation(self, change=None):
+        if getattr(self, "_updating_reference_controls", False):
+            return
+        self._reference_dem_ready = False
+        self.run_preprocessing.disabled = True
+        self.alignment_dem.value = ""
+        self.mapproject_dem.value = ""
+        self.reference_dem_status.value = (
+            "<div style='margin:5px 0 8px 0;color:#8a5a00;'>"
+            "Reference settings changed. Prepare and inspect the reference DEMs "
+            "again before starting ASP.</div>"
+        )
+        self.reference_dem_progress.value = 0
+        self.reference_dem_progress.bar_style = ""
+        self.reference_dem_progress_text.value = (
+            "<span style='color:#666;'>Waiting.</span>"
+        )
+        self.reference_dem_qc_tabs.layout.display = "none"
+
+    def _render_reference_dem_qc(self, settings, result):
+        from IPython.display import clear_output, display
+        products = {
+            "alignment": _plot_reference_dem_from_path(
+                settings, Path(result["alignment_dem"]),
+                "High-resolution alignment reference",
+                "reference_alignment_dem_preview",
+            ),
+            "mapproject": _plot_reference_dem_from_path(
+                settings, Path(result["mapproject_dem"]),
+                "Map-projection reference",
+                "reference_mapproject_dem_preview",
+            ),
+        }
+        for key in ("alignment", "mapproject"):
+            payload = products[key]
+            summary = payload["summary"]
+            out = self.reference_dem_qc_outputs[key]
+            with out:
+                clear_output(wait=True)
+                display(payload["figure"])
+                display(self.widgets.HTML(
+                    "<div style='line-height:1.55;margin-top:6px;'>"
+                    f"<b>File:</b> <code>{html.escape(summary['Path'])}</code><br>"
+                    f"<b>CRS:</b> {html.escape(summary['CRS'])}<br>"
+                    f"<b>Raster size:</b> {summary['Width']} × {summary['Height']} px<br>"
+                    f"<b>Pixel size:</b> {summary['Pixel X']:.6g} × {summary['Pixel Y']:.6g}<br>"
+                    f"<b>Extent:</b> L {summary['Left']:.3f}, R {summary['Right']:.3f}, "
+                    f"B {summary['Bottom']:.3f}, T {summary['Top']:.3f}<br>"
+                    f"<b>Elevation range:</b> {summary['Elevation min']:.3f} to "
+                    f"{summary['Elevation max']:.3f} m<br>"
+                    f"<b>Saved PNG:</b> <code>{html.escape(str(payload['png']))}</code><br>"
+                    f"<b>Saved PDF:</b> <code>{html.escape(str(payload['pdf']))}</code>"
+                    "</div>"
+                ))
+        self.reference_dem_qc_tabs.layout.display = ""
+        self.reference_dem_qc_tabs.selected_index = 0
+        return products
+
+    def _on_prepare_reference_dems(self, _):
+        self.prepare_reference_dems.disabled = True
+        self.run_preprocessing.disabled = True
+        self._reference_dem_ready = False
+        self.reference_dem_progress.bar_style = ""
+        self.reference_dem_progress.value = 0
+        self.reference_dem_qc_tabs.layout.display = "none"
+        try:
+            settings = self._build_settings()
+            self._set_reference_dem_progress(1, "Preparing reference DEMs")
+            from pleiades_reference_dem import (
+                IntegratedReferenceDEMSettings,
+                prepare_integrated_reference_dems,
+            )
+            ref_settings = IntegratedReferenceDEMSettings(
+                project_dir=settings.project_dir,
+                target_epsg=int(self.target_epsg.value),
+                region=self.reference_region.value,
+                aoi_path=self._resolved_reference_aoi(),
+                map_source=self.reference_map_source.value,
+                map_resolution_m=float(self.reference_map_resolution.value),
+                map_existing_path=self.reference_existing_map.value.strip(),
+                map_existing_convert_to_ellipsoid=bool(self.reference_existing_map_convert.value),
+                alignment_source=self.reference_alignment_source.value,
+                alignment_resolution_m=float(self.reference_alignment_resolution.value),
+                alignment_existing_path=self.reference_existing_alignment.value.strip(),
+                alignment_existing_convert_to_ellipsoid=bool(self.reference_existing_alignment_convert.value),
+                geoid_model=self.reference_geoid_model.value,
+                custom_n_raster=self.reference_custom_n.value.strip(),
+                global_buffer_deg=float(self.reference_global_buffer.value),
+                ign_buffer_m=float(self.reference_ign_buffer.value),
+                ign_workers=int(self.reference_ign_workers.value),
+            )
+            result = prepare_integrated_reference_dems(
+                ref_settings, progress_callback=self._set_reference_dem_progress
+            )
+            self.alignment_dem.value = str(result["alignment_dem"])
+            self.mapproject_dem.value = str(result["mapproject_dem"])
+            self._set_reference_dem_progress(94, "Rendering reference DEM QC")
+            qc = self._render_reference_dem_qc(settings, result)
+            self.reference_dem_status.value = (
+                "<div style='margin:6px 0 9px 0;padding:9px 11px;"
+                "border-left:4px solid #2e7d32;background:#f4fbf4;"
+                "color:#444;font-size:12px;line-height:1.5;'>"
+                "<b>✓ Reference DEMs prepared. ASP has NOT started.</b><br>"
+                "Inspect both tabs below before continuing.<br>"
+                f"<b>Alignment DSM:</b> <code>{html.escape(str(result['alignment_dem']))}</code><br>"
+                f"<b>Map-projection DEM:</b> <code>{html.escape(str(result['mapproject_dem']))}</code><br>"
+                f"<b>Alignment coverage:</b> {float(result.get('alignment_coverage_percent', 100.0)):.1f}%<br>"
+                f"<b>Map DEM coverage:</b> {float(result.get('mapproject_coverage_percent', 100.0)):.1f}%<br>"
+                f"<b>Configuration:</b> <code>{html.escape(str(result['config_path']))}</code>"
+                "</div>"
+            )
+            self._reference_dem_ready = True
+            self.run_preprocessing.disabled = False
+            self.reference_dem_progress.value = 100
+            self.reference_dem_progress.bar_style = "success"
+            self.reference_dem_progress_text.value = (
+                "<span style='color:#2e7d32;'>Reference DEM QC ready. "
+                "Review both tabs, then run ASP.</span>"
+            )
+            for payload in qc.values():
+                plt.close(payload["figure"])
+        except Exception as exc:
+            self.reference_dem_progress.bar_style = "danger"
+            self.reference_dem_progress_text.value = (
+                "<span style='color:#b00020;'>Reference DEM preparation failed.</span>"
+            )
+            self.reference_dem_status.value = (
+                "<div style='margin:6px 0 9px 0;padding:9px 11px;"
+                "border-left:4px solid #b00020;background:#fff4f4;"
+                "color:#444;font-size:12px;line-height:1.5;'>"
+                "<b>✗ Reference DEM preparation stopped.</b><br>"
+                f"{html.escape(type(exc).__name__ + ': ' + str(exc))}<br>"
+                "<b>No ASP processing has started.</b></div>"
+            )
+            self._reference_dem_ready = False
+            self.run_preprocessing.disabled = True
+        finally:
+            self.prepare_reference_dems.disabled = False
+
     def _set_preprocess_progress(
         self,
         value,
@@ -6945,7 +7271,9 @@ class FullProjectSetupUI(ProjectSetupUI):
 
                 display(
                     self.widgets.HTML(
-                        "<b>Saved figure:</b> "
+                        "<b>Saved PNG:</b> "
+                        f"<code>{html.escape(str(payload['plot']['png']))}</code>"
+                        "<br><b>Saved PDF:</b> "
                         f"<code>{html.escape(str(payload['plot']['pdf']))}</code>"
                         "<br><b>Detailed log:</b> "
                         f"<code>{html.escape(str(payload['log']))}</code>"
@@ -7057,7 +7385,13 @@ class FullProjectSetupUI(ProjectSetupUI):
                 )
                 display(
                     self.widgets.HTML(
-                        "<b>Saved figure:</b> "
+                        "<b>Target CRS validated:</b> "
+                        f"EPSG:{int(payload['target_epsg'])}"
+                        "<br><b>QC display extent:</b> common A/B/C intersection "
+                        "(GeoTIFF outputs are unchanged)"
+                        "<br><b>Saved PNG:</b> "
+                        f"<code>{html.escape(str(payload['plot']['png']))}</code>"
+                        "<br><b>Saved PDF:</b> "
                         f"<code>{html.escape(str(payload['plot']['pdf']))}</code>"
                         "<br><b>Projection DEM:</b> "
                         f"<code>{html.escape(str(payload['mapproject_dem']))}</code>"
@@ -7078,21 +7412,18 @@ class FullProjectSetupUI(ProjectSetupUI):
         self._reset_preprocess_stage_tabs()
 
         try:
+            if not getattr(self, "_reference_dem_ready", False):
+                raise ValueError(
+                    "Prepare and inspect the reference DEMs first. "
+                    "ASP bundle adjustment has not started."
+                )
+
             settings = self._build_settings()
+            processing = self._build_pre_processing_settings()
 
             self._set_preprocess_progress(
                 1,
-                "Preparing reference DEMs",
-            )
-
-            reference_result = (
-                self._prepare_reference_dem_inputs(
-                    settings
-                )
-            )
-
-            processing = (
-                self._build_pre_processing_settings()
+                "Starting ASP bundle adjustment",
             )
 
             result = run_pre_processing(

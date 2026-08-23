@@ -34,13 +34,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import math
 import shutil
+
+import geopandas as gpd
 
 import numpy as np
 import rasterio
 from pyproj import CRS
 from rasterio.enums import Resampling
 from rasterio.warp import calculate_default_transform, reproject
+from rasterio.transform import from_origin
 
 import global_dem_downloader as global_dem
 import ign_lidarhd_downloader as ign_lidar
@@ -131,6 +135,7 @@ def _reproject_resample(
     dst_crs,
     resolution_m,
     resampling="bilinear",
+    dst_bounds=None,
 ):
     src_path = Path(
         src_path
@@ -157,25 +162,27 @@ def _reproject_resample(
                 f"Reference DEM has no CRS:\n{src_path}"
             )
 
-        kwargs = {}
-
-        if dst_crs.is_projected:
-            kwargs[
-                "resolution"
-            ] = float(
-                resolution_m
+        if dst_bounds is not None:
+            if not dst_crs.is_projected:
+                raise ValueError(
+                    "Explicit metric reference bounds require a projected target CRS."
+                )
+            left, bottom, right, top = [float(v) for v in dst_bounds]
+            resolution = float(resolution_m)
+            left = math.floor(left / resolution) * resolution
+            bottom = math.floor(bottom / resolution) * resolution
+            right = math.ceil(right / resolution) * resolution
+            top = math.ceil(top / resolution) * resolution
+            width = int(round((right - left) / resolution))
+            height = int(round((top - bottom) / resolution))
+            transform = from_origin(left, top, resolution, resolution)
+        else:
+            kwargs = {}
+            if dst_crs.is_projected:
+                kwargs["resolution"] = float(resolution_m)
+            transform, width, height = calculate_default_transform(
+                src.crs, dst_crs, src.width, src.height, *src.bounds, **kwargs
             )
-
-        transform, width, height = (
-            calculate_default_transform(
-                src.crs,
-                dst_crs,
-                src.width,
-                src.height,
-                *src.bounds,
-                **kwargs,
-            )
-        )
 
         profile = src.profile.copy()
         profile.pop(
@@ -355,6 +362,63 @@ def _download_global(
     )
 
 
+
+def _geometry_union(gdf):
+    geometry = gdf.geometry
+    union_all = getattr(geometry, "union_all", None)
+    if callable(union_all):
+        return union_all()
+    return geometry.unary_union
+
+
+def _aligned_metric_bounds(bounds, resolution_m):
+    left, bottom, right, top = [float(v) for v in bounds]
+    resolution = float(resolution_m)
+    return (
+        math.floor(left / resolution) * resolution,
+        math.floor(bottom / resolution) * resolution,
+        math.ceil(right / resolution) * resolution,
+        math.ceil(top / resolution) * resolution,
+    )
+
+
+def _target_reference_bounds(
+    aoi_path,
+    target_crs,
+    resolution_m,
+    buffer_m,
+):
+    """Build a snapped rectangular target-CRS reference extent."""
+    aoi = gpd.read_file(aoi_path)
+
+    if aoi.empty:
+        raise ValueError(f"Reference DEM AOI is empty:\n{aoi_path}")
+
+    if aoi.crs is None:
+        raise ValueError(f"Reference DEM AOI has no CRS:\n{aoi_path}")
+
+    target_crs_obj = CRS.from_user_input(target_crs)
+
+    if not target_crs_obj.is_projected:
+        raise ValueError(
+            "Automatic IGN LiDAR preparation requires a projected target CRS."
+        )
+
+    target = aoi.to_crs(target_crs_obj)
+    geom = _geometry_union(target)
+
+    if geom is None or geom.is_empty:
+        raise ValueError("Reference DEM AOI contains no valid geometry.")
+
+    if float(buffer_m) > 0:
+        geom = geom.buffer(float(buffer_m))
+
+    return _aligned_metric_bounds(
+        geom.bounds,
+        resolution_m,
+    )
+
+
 def _download_ign(
     aoi_path,
     output_dir,
@@ -362,31 +426,29 @@ def _download_ign(
     buffer_m,
     workers,
 ):
-    outputs = (
-        ign_lidar.download_ign_lidarhd_dsm(
-            aoi_path=aoi_path,
-            out_dir=output_dir,
-            target_res=float(
-                resolution_m
-            ),
-            download_buffer=True,
-            buffer_distance_m=float(
-                buffer_m
-            ),
-            n_workers=int(
-                workers
-            ),
-            aggregation_fun="mean",
-            export_to_wgs84=False,
-            plot_results=False,
-        )
+    """
+    Use the original tested IGN selection rule:
+
+        actual AOI -> Lambert-93 -> buffer -> intersect native IGN tiles
+
+    The complete selected-tile mosaic is returned so the surrounding
+    topography is retained instead of cropping the source back to the AOI.
+    """
+    outputs = ign_lidar.download_ign_lidarhd_dsm(
+        aoi_path=aoi_path,
+        out_dir=output_dir,
+        target_res=float(resolution_m),
+        download_buffer=True,
+        buffer_distance_m=float(buffer_m),
+        n_workers=int(workers),
+        aggregation_fun="mean",
+        export_to_wgs84=False,
+        plot_results=False,
     )
 
     return _valid_raster(
-        outputs[
-            "bbox_epsg2154"
-        ],
-        "IGN LiDAR HD reference DEM",
+        outputs["selected_tiles_mosaic_epsg2154"],
+        "IGN LiDAR HD buffered selected-tile mosaic",
     )
 
 
@@ -460,6 +522,30 @@ def _prepare_existing(
         final,
         n_path,
     )
+
+
+
+def _validate_reference_coverage(path, role):
+    """Require 100% valid coverage of the rectangular ASP reference grid."""
+    path = Path(path)
+    with rasterio.open(path) as src:
+        data = src.read(1, masked=True)
+        values = data.filled(np.nan)
+        valid = (~np.ma.getmaskarray(data)) & np.isfinite(values)
+        total = int(valid.size)
+        valid_count = int(valid.sum())
+        if total == 0:
+            raise ValueError(f"{role} reference DEM is empty:\n{path}")
+        coverage = 100.0 * valid_count / total
+        if valid_count != total:
+            missing = total - valid_count
+            raise ValueError(
+                f"{role} reference DEM has incomplete rectangular coverage: "
+                f"{coverage:.3f}% valid ({missing:,} uncovered pixels).\n"
+                f"File: {path}\n"
+                "Reference preparation has been stopped before ASP."
+            )
+    return 100.0
 
 
 def prepare_integrated_reference_dems(
@@ -572,24 +658,21 @@ def prepare_integrated_reference_dems(
         settings.alignment_source
         == "ign"
     ):
-        alignment_source_cache = (
-            _download_ign(
-                aoi_path=aoi_path,
-                output_dir=(
-                    source_dir
-                    / "IGN_alignment"
-                ),
-                resolution_m=(
-                    settings.alignment_resolution_m
-                ),
-                buffer_m=(
-                    settings.ign_buffer_m
-                ),
-                workers=(
-                    settings.ign_workers
-                ),
-            )
+        alignment_target_bounds = _target_reference_bounds(
+            aoi_path=aoi_path,
+            target_crs=target_crs,
+            resolution_m=settings.alignment_resolution_m,
+            buffer_m=settings.ign_buffer_m,
         )
+
+        alignment_source_cache = _download_ign(
+            aoi_path=aoi_path,
+            output_dir=(source_dir / "IGN"),
+            resolution_m=settings.alignment_resolution_m,
+            buffer_m=settings.ign_buffer_m,
+            workers=settings.ign_workers,
+        )
+
 
         alignment_horizontal = (
             final_dir
@@ -601,6 +684,7 @@ def prepare_integrated_reference_dems(
             alignment_horizontal,
             target_crs,
             settings.alignment_resolution_m,
+            dst_bounds=alignment_target_bounds,
         )
 
         alignment_dem = (
@@ -692,53 +776,25 @@ def prepare_integrated_reference_dems(
     if (
         settings.map_source
         == "ign"
-        and settings.alignment_source
-        == "ign"
     ):
-        # Reuse the already prepared ellipsoidal LiDAR reference.
-        # This preserves the tested 1 m alignment / 50 m map-projection logic
-        # without downloading the same IGN tiles twice.
-        mapproject_dem = (
-            final_dir
-            / (
-                "MapProjection_IGN_"
-                f"{settings.map_resolution_m:g}m_"
-                "Ellipsoidal_"
-                f"EPSG{settings.target_epsg}.tif"
-            )
+        # Restore the original tested construction: aggregate the native IGN
+        # LiDAR tiles directly to the generalized map DEM resolution. Do not
+        # derive the 50 m map DEM from the reprojected 1 m alignment DSM.
+        map_target_bounds = _target_reference_bounds(
+            aoi_path=aoi_path,
+            target_crs=target_crs,
+            resolution_m=settings.map_resolution_m,
+            buffer_m=settings.ign_buffer_m,
         )
 
-        _reproject_resample(
-            alignment_dem,
-            mapproject_dem,
-            target_crs,
-            settings.map_resolution_m,
+        ign_map_source = _download_ign(
+            aoi_path=aoi_path,
+            output_dir=(source_dir / "IGN"),
+            resolution_m=settings.map_resolution_m,
+            buffer_m=settings.ign_buffer_m,
+            workers=settings.ign_workers,
         )
 
-        map_n = alignment_n
-
-    elif (
-        settings.map_source
-        == "ign"
-    ):
-        ign_map_source = (
-            _download_ign(
-                aoi_path=aoi_path,
-                output_dir=(
-                    source_dir
-                    / "IGN_mapprojection"
-                ),
-                resolution_m=(
-                    settings.map_resolution_m
-                ),
-                buffer_m=(
-                    settings.ign_buffer_m
-                ),
-                workers=(
-                    settings.ign_workers
-                ),
-            )
-        )
 
         map_horizontal = (
             final_dir
@@ -750,6 +806,7 @@ def prepare_integrated_reference_dems(
             map_horizontal,
             target_crs,
             settings.map_resolution_m,
+            dst_bounds=map_target_bounds,
         )
 
         mapproject_dem = (
@@ -898,6 +955,15 @@ def prepare_integrated_reference_dems(
             "Choose a map-projection reference DEM source."
         )
 
+    alignment_coverage_percent = _validate_reference_coverage(
+        alignment_dem,
+        "Alignment",
+    )
+    mapproject_coverage_percent = _validate_reference_coverage(
+        mapproject_dem,
+        "Map-projection",
+    )
+
     progress(
         4,
         "Reference DEMs ready",
@@ -931,6 +997,8 @@ def prepare_integrated_reference_dems(
         "mapproject_dem": str(
             mapproject_dem
         ),
+        "alignment_coverage_percent": alignment_coverage_percent,
+        "mapproject_coverage_percent": mapproject_coverage_percent,
         "alignment_geoid_model_raster": (
             str(
                 alignment_n
@@ -971,6 +1039,8 @@ def prepare_integrated_reference_dems(
                 mapproject_dem
             )
         ),
+        "alignment_coverage_percent": alignment_coverage_percent,
+        "mapproject_coverage_percent": mapproject_coverage_percent,
         "alignment_n": (
             Path(
                 alignment_n

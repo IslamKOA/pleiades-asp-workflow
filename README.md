@@ -1,62 +1,236 @@
 # Pléiades ASP Workflow
 
-**GitHub candidate release: v0.9.0**
+**Release v1.0.6**
 
-A notebook-first, end-to-end workflow for generating and evaluating DSMs from
-**Pléiades, Pléiades Neo and SPOT 6/7** imagery with **NASA Ames Stereo
-Pipeline (ASP)**.
+A notebook-first research-software interface for generating DSMs from
+**Pléiades, Pléiades Neo, and SPOT 6/7** stereo/tri-stereo imagery with
+**NASA Ames Stereo Pipeline (ASP)**.
 
-The repository combines two layers:
+The software integrates image preparation, metadata/geometry inspection,
+reference-DEM preparation, ASP pre-processing, point-cloud reconstruction,
+and final DSM generation in one Jupyter interface.
 
-1. **ASP runtime layer** — installs/selects an official ASP release and exposes
-   the required ASP commands on Linux or through the Windows → WSL bridge.
-2. **Scientific notebook interface** — `Pleiades_ASP_Workflow.ipynb`, which
-   provides data preparation, metadata/geometry inspection, pre-processing,
-   integrated reference-DEM preparation, point-cloud reconstruction and final
-   DSM generation.
+The reproducibility default is **NASA Ames Stereo Pipeline 3.3.0**.
 
-The recommended reproducibility target is **ASP 3.3.0**, matching the tested
-workflow methodology.
-
-> The manuscript/software citation will be added after publication. Do not use
-> a provisional citation from this README.
+> The associated paper/software citation will be added after publication.
+> For the complete scientific methodology, parameter interpretation,
+> validation, and recommendations, follow the associated paper once the final
+> citation is available.
 
 ---
 
-## 1. Install the workflow package and ASP
+## Installation
 
-### 1.1 Create a clean Conda environment
+Use Python **3.10 or newer**. Python 3.11 is recommended.
+
+Create and activate a clean environment:
 
 ```bash
 conda create -n pleiades_asp python=3.11 pip -y
 conda activate pleiades_asp
 ```
 
-### 1.2 Install this repository from GitHub
-
-After the repository is published, install it with:
-
-```bash
-python -m pip install git+https://github.com/IslamKOA/pleiades-asp-workflow.git
-```
-
-This installs the Python dependencies, ASP runner/bridge, and the packaged
-Jupyter interface.
-
-### 1.3 Install the tested ASP release
+Install the interface, install/select ASP 3.3.0, and create the notebook
+workspace with one command:
 
 ```bash
-asp-install 3.3.0
+python -m pip install git+https://github.com/IslamKOA/pleiades-asp-workflow.git && asp-install 3.3.0 && pleiades-workflow-init
 ```
 
-Check it with:
+The complete interface is created at:
+
+```text
+~/Pleiades_ASP_Workflow/
+```
+
+Launch it with:
 
 ```bash
-asp-version
-asp-doctor
+jupyter lab ~/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb
 ```
 
-The public ASP commands include:
+Then click:
+
+```text
+▶ Start Pléiades ASP Workflow
+```
+
+---
+
+## Workflow
+
+```text
+Prepare data
+→ Metadata and geometry
+→ Reference DEM preparation and QC
+→ ASP pre-processing
+   ├─ Bundle adjustment
+   ├─ Preliminary stereo
+   ├─ Preliminary DSM
+   ├─ High-resolution reference alignment
+   ├─ Apply alignment transform to cameras
+   └─ Map projection
+→ Point-cloud reconstruction
+→ Final DSM generation
+```
+
+![Stereo and tri-stereo acquisition geometry](src/pleiades_asp_workflow/interface_bundle/figures/overview_mountain_notebook.png)
+
+The interface preserves the tested scientific processing sequence while
+allowing the intended parameters to remain user-configurable.
+
+---
+
+## Reference DEM preparation
+
+The software keeps two reference roles separate:
+
+1. **High-resolution alignment reference** for `pc_align`.
+2. **Generalized map-projection reference** for `mapproject`.
+
+For **France — mainland**, the default starting configuration is:
+
+```text
+Alignment reference:      IGN LiDAR HD
+Alignment resolution:     1 m
+Map-projection reference: IGN LiDAR HD
+Map DEM resolution:       50 m
+Vertical model:           RAF20
+```
+
+Reference DEMs are prepared **before bundle adjustment**. The user first runs:
+
+```text
+1. Prepare & check reference DEMs
+```
+
+The actual alignment and map-projection DEMs are then displayed with CRS,
+resolution, extent, elevation range, and coverage information. ASP remains
+blocked if reference preparation fails.
+
+The Reference DEM AOI may be left blank to reuse the AOI entered under
+**Prepare data**, or a separate reference AOI may be supplied.
+
+For global use, Copernicus GLO-30, SRTM1, and existing DEM inputs are supported
+for the map-projection reference. An existing high-resolution DSM can be used
+for alignment.
+
+Automatically downloaded references can be converted to ellipsoidal heights.
+Existing DEM vertical conversion remains optional.
+
+```text
+N = h - H
+h = H + N
+H = h - N
+```
+
+![Vertical-reference concept](src/pleiades_asp_workflow/interface_bundle/figures/Geoid_concept.png)
+
+---
+
+## ASP pre-processing
+
+The tested pre-processing sequence is:
+
+```text
+Reference DEM QC
+→ bundle_adjust
+→ preliminary parallel_stereo
+→ preliminary point2dem
+→ pc_align
+→ apply transform to adjusted cameras
+→ mapproject
+```
+
+Tested starting values include:
+
+```text
+Bundle-adjust robust threshold     2
+Bundle-adjust max iterations       500
+Preliminary algorithm              BM — asp_bm
+Preliminary CK:SK                  35:45
+Preliminary cost mode              2
+Preliminary xcorr threshold        2
+Correlation memory                 10240 MB
+Correlation tile size              3200
+Subpixel mode                      2
+pc_align max displacement          250 m
+pc_align iterations                100
+Map/camera threads                 18
+Map-projected image resolution     0.5 m
+```
+
+BM, SGM, MGM, and custom algorithm/kernel controls are available.
+
+---
+
+## Point-cloud reconstruction and final DSM
+
+The interface supports stereo AB, tri-stereo single-pair tests, ordered
+three-image configurations, and full tri-stereo reconstruction using
+AB + AC + BC followed by `pc_merge`.
+
+Tested final DSM starting values:
+
+```text
+Final DSM resolution                  1 m
+Maximum valid triangulation error     1 m
+```
+
+---
+
+## Output figures
+
+Project QC figures are written under:
+
+```text
+<Project>/Figure/
+```
+
+The workflow saves graphical outputs in **both PNG and PDF**, including:
+
+- prepared/cropped image previews;
+- alignment reference DEM QC;
+- map-projection reference DEM QC;
+- preliminary DSM visualization;
+- map-projected image QC;
+- final DSM visualization.
+
+Static software figures are kept together under:
+
+```text
+figures/
+```
+
+The installed workspace also includes:
+
+```text
+examples/
+```
+
+for real representative PNG/PDF products generated by the workflow. The public
+README can display those examples after validated outputs are copied there.
+
+---
+
+## Map-projection CRS and QC
+
+The **Target CRS (EPSG)** selected under Advanced pre-processing is reused by
+reference-DEM preparation and ASP `mapproject`.
+
+The map-projection QC verifies the raster CRS and displays the common spatial
+intersection of all map-projected views. This avoids non-overlapping NoData
+borders in the QC figure without modifying the actual GeoTIFF outputs.
+
+For the La Bérarde test case, the tested target CRS is:
+
+```text
+EPSG:32632 — WGS 84 / UTM zone 32N
+```
+
+---
+
+## Supported ASP commands
 
 ```text
 bundle_adjust
@@ -68,379 +242,80 @@ pc_merge
 dem_geoid
 ```
 
-**Windows:** ASP itself runs in Linux through WSL; the package handles the
-Windows-path → WSL-path bridge. A working WSL installation is therefore
-required.
-
 ---
 
-## 2. Create/download the notebook interface
+## Additional information
 
-After the package is installed, run:
-
-```bash
-pleiades-workflow-init
-```
-
-This creates:
-
-```text
-./Pleiades_ASP_Workflow/
-```
-
-containing the complete working interface:
-
-```text
-Pleiades_ASP_Workflow.ipynb
-asp_utils2.py
-prepare_stereo_metadata_and_geometry.py
-pleiades_reference_dem.py
-global_dem_downloader.py
-ign_lidarhd_downloader.py
-vertical_reference.py
-requirements_interface.txt
-figures/
-data/
-```
-
-The command refuses to overwrite an existing workspace by default. To refresh
-package-managed files intentionally:
-
-```bash
-pleiades-workflow-init Pleiades_ASP_Workflow --force
-```
-
-For the developer notebook as well:
-
-```bash
-pleiades-workflow-init Pleiades_ASP_Workflow --developer
-```
-
-### Start the interface
-
-```bash
-cd Pleiades_ASP_Workflow
-jupyter lab Pleiades_ASP_Workflow.ipynb
-```
-
-Then click:
-
-```text
-▶ Start Pléiades ASP Workflow
-```
-
----
-
-## 3. One-line initial setup
-
-Once the GitHub repository is public, the normal first installation can be:
-
-```bash
-python -m pip install git+https://github.com/IslamKOA/pleiades-asp-workflow.git && asp-install 3.3.0 && pleiades-workflow-init
-```
-
-Then:
-
-```bash
-cd Pleiades_ASP_Workflow
-jupyter lab Pleiades_ASP_Workflow.ipynb
-```
-
----
-
-## 4. Test this candidate ZIP before publishing to GitHub
-
-For the ZIP supplied with this candidate release:
-
-```bash
-unzip pleiades-asp-workflow-v0.9.0-github-candidate.zip
-cd pleiades-asp-workflow-v0.9.0-github-candidate
-```
-
-Install the local repository in the test environment:
-
-```bash
-python -m pip install -e .
-```
-
-If you already have ASP 3.3.0 installed by the runner, check it:
+Check the installation with:
 
 ```bash
 asp-version
 asp-doctor
+pleiades-workflow-info
 ```
 
-Otherwise install it:
+Refresh an existing installed workspace after a software update with:
 
 ```bash
-asp-install 3.3.0
+pleiades-workflow-init --force
 ```
 
-Create a fresh interface workspace:
+If an existing ASP installation places its bundled Python before the active
+Conda Python, check:
 
 ```bash
-pleiades-workflow-init ./Pleiades_ASP_Workflow_Test
+which python
 ```
 
-Launch:
+If it points inside `StereoPipeline-.../bin`, restore the active environment:
 
 ```bash
-jupyter lab ./Pleiades_ASP_Workflow_Test/Pleiades_ASP_Workflow.ipynb
+export PATH="$CONDA_PREFIX/bin:$PATH"
+hash -r
 ```
 
-This local test is the recommended final check before pushing the repository to
-GitHub.
-
----
-
-## 5. Scientific workflow
-
-The notebook follows the processing sequence:
-
-```text
-Prepare data
-→ Metadata and geometry
-→ Pre-processing
-   ├─ Reference DEM preparation
-   ├─ Bundle adjustment
-   ├─ Preliminary stereo
-   ├─ Preliminary DSM
-   ├─ High-resolution alignment
-   ├─ Camera transform
-   └─ Map projection
-→ Point-cloud reconstruction
-→ Final DSM generation
-```
-
-The existing ASP processing sequence and the tested stereo/DSM defaults are
-retained in this candidate.
-
----
-
-## 6. Integrated Reference DEM settings
-
-Reference topography is configured directly inside **Pre-processing**.
-
-The panel is deliberately organized around the two distinct ASP roles.
-
-### General location
-
-At the top of the panel the user selects:
-
-```text
-Country / region
-Reference DEM AOI
-```
-
-The **Reference DEM AOI may normally be left blank**. In that case the software
-reuses the AOI already supplied under **Prepare data**. A separate AOI is only
-needed when no Prepare-data AOI exists or when a different reference-download
-extent is required.
-
-### A. High-resolution alignment reference
-
-This reference is used by `pc_align`.
-
-**France — mainland default:**
-
-```text
-IGN LiDAR HD
-1 m
-```
-
-An existing high-resolution DSM can always be selected instead.
-
-For **Other / global**, an existing high-resolution alignment DSM is required;
-Copernicus/SRTM 30 m surfaces are not substituted for the high-resolution
-alignment reference.
-
-### B. Map-projection reference
-
-This reference is used by `mapproject`.
-
-France defaults to:
-
-```text
-IGN LiDAR HD
-50 m
-```
-
-The user may instead select:
-
-```text
-Copernicus DEM GLO-30
-SRTM1 30 m
-Existing DEM
-```
-
-Copernicus/SRTM default to 30 m. All map-reference resolutions remain editable.
-
-If Copernicus or SRTM is selected in France, the high-resolution alignment
-reference remains IGN LiDAR HD by default.
-
-### C. Vertical reference conversion
-
-Automatically downloaded reference DEMs are prepared as **ellipsoidal heights**
-before ASP.
-
-France defaults to:
-
-```text
-RAF20
-```
-
-but the selector remains editable:
-
-```text
-RAF20
-EGM96
-EGM2008
-Custom N raster
-```
-
-Other/global defaults are:
-
-```text
-SRTM       → EGM96
-Copernicus → EGM2008
-```
-
-For an **existing DEM**, conversion is optional. If conversion is not selected,
-the software assumes that the existing reference already contains the vertical
-heights intended for ASP.
-
-The vertical relationship is:
-
-```text
-h = H + N
-H = h - N
-```
-
-where `N` is the spatial geoid/quasi-geoid separation.
-
-### Target horizontal CRS
-
-The prepared alignment and map-projection DEMs use the **Target CRS (EPSG)**
-already defined under **Advanced pre-processing**. The control is intentionally
-not duplicated in the Reference DEM panel.
-
----
-
-## 7. Pre-processing defaults retained
-
-The tested defaults remain user-editable:
-
-```text
-BA robust threshold          2
-BA max iterations            500
-Preliminary algorithm        BM — asp_bm
-Preliminary CK:SK            35:45
-Preliminary cost mode        2
-Preliminary xcorr threshold  2
-Correlation memory           10240 MB
-Correlation tile size        3200
-Subpixel mode                2
-Max displacement             250 m
-pc_align iterations          100
-Map/camera threads           18
-Map image resolution         0.5 m
-```
-
-BM/SGM/MGM and custom algorithm/kernel controls remain available exactly as in
-the tested notebook workflow.
-
----
-
-## 8. Point-cloud and final DSM modes
-
-The interface supports:
-
-- stereo AB;
-- tri-stereo single-pair tests AB / AC / BC;
-- ordered three-image modes ABC / BAC / CAB;
-- full Tri mode: AB + AC + BC followed by `pc_merge`.
-
-The final DSM defaults remain:
-
-```text
-DSM resolution                    1 m
-Maximum valid triangulation error 1 m
-```
-
-Intersection-error output remains optional.
-
----
-
-## 9. Figures and software assets
-
-All interface/publication figures are stored in **one folder**:
-
-```text
-figures/
-├── overview_mountain_page1.png
-├── Overview_mountain.pdf
-└── Geoid_concept.png
-```
-
-This keeps the runtime workspace clean and makes later README figure insertion
-straightforward.
-
----
-
-## 10. Optional RPC crop dependency
-
-The optional RPC-based crop step uses `rpcm`.
-
-Because `rpcm`/`srtm4` may require additional native build support on some
-Windows installations, it remains an optional dependency:
+Then confirm:
 
 ```bash
-python -m pip install "pleiades-asp-workflow[rpc]"
+which python
+python --version
 ```
 
-When installing directly from GitHub with the optional dependency:
+On Windows, NASA ASP itself runs in Linux; use the included Windows → WSL
+bridge with a working WSL installation.
+
+The optional RPC crop step uses `rpcm`. Install that optional dependency only
+when needed:
 
 ```bash
 python -m pip install "pleiades-asp-workflow[rpc] @ git+https://github.com/IslamKOA/pleiades-asp-workflow.git"
 ```
 
-The rest of the workflow does not require `rpcm` unless the optional RPC crop is
-used.
-
 ---
 
-## 11. Repository structure
+## Installed workspace
 
 ```text
-pleiades-asp-workflow/
-├── README.md
-├── LICENSE
-├── CHANGELOG.md
-├── pyproject.toml
-├── src/
-│   ├── pleiades_asp_runner/       # ASP installer + Linux/WSL command bridge
-│   ├── asp_utils/                 # existing public utility surface
-│   └── pleiades_asp_workflow/
-│       ├── workspace.py           # pleiades-workflow-init
-│       └── interface_bundle/      # notebook + runtime modules/assets
-└── tests/
+~/Pleiades_ASP_Workflow/
+├── Pleiades_ASP_Workflow.ipynb
+├── asp_utils2.py
+├── prepare_stereo_metadata_and_geometry.py
+├── pleiades_reference_dem.py
+├── global_dem_downloader.py
+├── ign_lidarhd_downloader.py
+├── vertical_reference.py
+├── requirements_interface.txt
+├── figures/
+├── examples/
+└── data/
 ```
 
 ---
 
-## 12. Citation and publication
+## Citation
 
-The associated paper/software citation is intentionally left as a placeholder
-in this candidate package and will be added once the final publication reference
-is available.
+The associated paper/software citation will be added after publication.
 
-The notebook cover retains the author and affiliation information used by the
-research software.
+## License
 
----
-
-## 13. License
-
-This candidate preserves the existing repository `LICENSE` file. Review the
-license/citation wording before the public GitHub release if you want to change
-the software-protection terms.
+See `LICENSE`.
