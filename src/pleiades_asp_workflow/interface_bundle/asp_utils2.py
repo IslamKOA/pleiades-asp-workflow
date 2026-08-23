@@ -340,7 +340,7 @@ def _require_rpcm():
         from rpcm.rpc_model import RPCModel
         return RPCModel
     except ImportError as exc:
-        raise ImportError("AOI cropping uses rpcm RPCModel. Install rpcm in this environment.") from exc
+        raise ImportError("AOI cropping requires rpcm RPCModel, which is a standard workflow dependency and should be installed automatically. Reinstall or update pleiades-asp-workflow in the active Python environment.") from exc
 
 
 def load_rpc_from_xml(xml_path):

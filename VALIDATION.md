@@ -58,3 +58,10 @@ workspace copy of `overview_mountain_page1.png` from being displayed.
 - Startup-cell outputs remain visible so the interactive workflow UI is unaffected.
 - The developer notebook is unchanged.
 - No scientific ASP, Reference DEM, stereo, alignment, map-projection, or DSM logic was modified.
+
+## Required RPC dependency verification
+
+- `rpcm==1.4.10` is a core package dependency, not an optional extra.
+- A normal `pip install` of `pleiades-asp-workflow` therefore installs RPC support automatically.
+- `requirements_interface.txt` is kept consistent with the package metadata.
+- AOI cropping no longer instructs users to manually install `rpcm`; a missing import now indicates an incomplete environment/install.

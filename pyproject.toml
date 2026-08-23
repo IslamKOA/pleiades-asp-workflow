@@ -41,12 +41,10 @@ dependencies = [
     "notebook",
     "ipykernel",
     "ipywidgets",
+    "rpcm==1.4.10",
 ]
 
 [project.optional-dependencies]
-rpc = [
-    "rpcm==1.4.10",
-]
 dev = [
     "pytest",
 ]

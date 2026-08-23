@@ -807,7 +807,7 @@ def load_rpc_from_xml(xml_path):
             from rpcm import RPCModel
         except ImportError as error:
             raise ImportError(
-                "The 'rpcm' package is required to plot cropped "
+                "The 'rpcm' package is a standard workflow dependency required to plot cropped "
                 "RPC images in map coordinates."
             ) from error
 

@@ -284,14 +284,7 @@ python --version
 On Windows, NASA ASP itself runs in Linux; use the included Windows → WSL
 bridge with a working WSL installation.
 
-The optional RPC crop step uses `rpcm`. Install that optional dependency only
-when needed:
-
-```bash
-python -m pip install "pleiades-asp-workflow[rpc] @ git+https://github.com/IslamKOA/pleiades-asp-workflow.git"
-```
-
----
+`rpcm` is installed automatically as a standard dependency of the workflow, so AOI cropping does not require a separate installation step.
 
 ## Installed workspace
 

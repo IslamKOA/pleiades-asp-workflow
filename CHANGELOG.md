@@ -2,6 +2,12 @@
 
 ## 1.0.6 — Final notebook presentation and release cleanup
 
+### Packaging fix — automatic RPC support
+
+- Promoted `rpcm==1.4.10` from an optional extra to a required dependency.
+- Fresh GitHub/pip installations now include AOI-cropping RPC support automatically.
+- Updated runtime guidance and installation documentation accordingly.
+
 - Fixes the incomplete Metadata and geometry concept figure by rendering it as responsive HTML instead of `ipywidgets.Image`.
 - Optimizes the notebook PNG while retaining the full-quality PDF in `figures/`.
 - Preserves all reference-DEM and ASP scientific processing logic from v1.0.4.
