@@ -65,3 +65,12 @@ workspace copy of `overview_mountain_page1.png` from being displayed.
 - A normal `pip install` of `pleiades-asp-workflow` therefore installs RPC support automatically.
 - `requirements_interface.txt` is kept consistent with the package metadata.
 - AOI cropping no longer instructs users to manually install `rpcm`; a missing import now indicates an incomplete environment/install.
+
+## Geoid / vertical-correction QC
+
+- Reference preparation now exposes three QC tabs: Alignment DEM, Map-projection DEM, and Geoid / Vertical.
+- The Geoid / Vertical tab plots the actual `N` raster(s) used in `h = H + N`.
+- The QC reports model, CRS, pixel size, extent, `N` range, and mean `N`.
+- The geoid preview is saved as `Figure/reference_geoid_preview.png` and `.pdf`.
+- If no vertical conversion is requested, the tab explicitly reports that the correction is not applied.
+- ASP and Reference DEM generation logic are unchanged; this is a QC/visualization addition only.

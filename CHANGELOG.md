@@ -2,6 +2,14 @@
 
 ## 1.0.6 — Final notebook presentation and release cleanup
 
+### Reference QC enhancement — geoid / vertical correction
+
+- Added a third `Geoid / Vertical` tab to the pre-ASP reference QC gate.
+- Displays the actual geoid/quasi-geoid undulation raster(s) `N` used for vertical conversion.
+- Saves `reference_geoid_preview.png` and `reference_geoid_preview.pdf`.
+- Clearly reports when no vertical conversion/geoid raster is required.
+- No scientific DEM-generation or ASP processing logic was changed.
+
 ### Packaging fix — automatic RPC support
 
 - Promoted `rpcm==1.4.10` from an optional extra to a required dependency.

@@ -105,8 +105,12 @@ Reference DEMs are prepared **before bundle adjustment**. The user first runs:
 ```
 
 The actual alignment and map-projection DEMs are then displayed with CRS,
-resolution, extent, elevation range, and coverage information. ASP remains
-blocked if reference preparation fails.
+resolution, extent, elevation range, and coverage information. A third
+**Geoid / Vertical** QC tab displays the actual geoid/quasi-geoid undulation
+raster(s) `N` used for ellipsoidal-height conversion, including CRS, resolution,
+extent, `N` range, mean `N`, and saved PNG/PDF previews. If vertical conversion
+is not applied, the tab explicitly reports that no geoid raster is required.
+ASP remains blocked if reference preparation fails.
 
 The Reference DEM AOI may be left blank to reuse the AOI entered under
 **Prepare data**, or a separate reference AOI may be supplied.

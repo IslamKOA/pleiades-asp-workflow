@@ -2165,6 +2165,167 @@ def _plot_reference_dem_from_path(
     return {"figure": fig, "png": png, "pdf": pdf, "summary": summary}
 
 
+
+def _plot_reference_geoid_qc(
+    settings: ProjectSettings,
+    result: dict,
+    model_label: str,
+):
+    """Plot the actual geoid/quasi-geoid undulation raster(s) used for conversion."""
+    candidates = [
+        (
+            "Alignment reference",
+            result.get("alignment_geoid_model_raster"),
+        ),
+        (
+            "Map-projection reference",
+            result.get("map_geoid_model_raster"),
+        ),
+    ]
+
+    rasters = []
+    seen = set()
+    for role, raw_path in candidates:
+        if not raw_path:
+            continue
+        path = Path(raw_path)
+        resolved = str(path.resolve()) if path.exists() else str(path)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        rasters.append((role, path))
+
+    if not rasters:
+        return None
+
+    ncols = len(rasters)
+    fig_width = 8.4 if ncols == 1 else 13.6
+    fig, axes = plt.subplots(
+        1,
+        ncols,
+        figsize=(fig_width, 6.4),
+        squeeze=False,
+    )
+    axes = axes.ravel()
+
+    summaries = []
+    for ax, (role, raster_path) in zip(axes, rasters):
+        n_raster, bounds, crs = _read_dem_preview(raster_path)
+        valid = n_raster.compressed()
+        if valid.size == 0:
+            raise ValueError(
+                "The prepared geoid/vertical-correction raster has no valid "
+                f"values:\n{raster_path}"
+            )
+
+        actual_min = float(np.min(valid))
+        actual_max = float(np.max(valid))
+        p2, p98 = np.percentile(valid, [2, 98])
+        if np.isclose(p2, p98):
+            p2 = actual_min
+            p98 = actual_max
+        if np.isclose(p2, p98):
+            p2 -= 0.5
+            p98 += 0.5
+
+        extent = [
+            bounds.left,
+            bounds.right,
+            bounds.bottom,
+            bounds.top,
+        ]
+        image = ax.imshow(
+            n_raster,
+            extent=extent,
+            origin="upper",
+            cmap="viridis",
+            vmin=p2,
+            vmax=p98,
+        )
+        cb = fig.colorbar(
+            image,
+            ax=ax,
+            shrink=0.82,
+            pad=0.025,
+        )
+        cb.set_label("Geoid undulation N (m)")
+        ax.set_title(role)
+
+        if crs is not None and crs.is_geographic:
+            ax.set_xlabel("Longitude")
+            ax.set_ylabel("Latitude")
+        else:
+            ax.set_xlabel("Easting (m)")
+            ax.set_ylabel("Northing (m)")
+
+        ax.set_aspect("equal")
+        ax.grid(
+            True,
+            color="white",
+            alpha=0.20,
+            linewidth=0.5,
+            linestyle="--",
+        )
+
+        with rasterio.open(raster_path) as src:
+            summaries.append(
+                {
+                    "Role": role,
+                    "Path": str(raster_path),
+                    "CRS": src.crs.to_string() if src.crs else "",
+                    "Width": int(src.width),
+                    "Height": int(src.height),
+                    "Pixel X": abs(float(src.transform.a)),
+                    "Pixel Y": abs(float(src.transform.e)),
+                    "Left": float(src.bounds.left),
+                    "Right": float(src.bounds.right),
+                    "Bottom": float(src.bounds.bottom),
+                    "Top": float(src.bounds.top),
+                    "N min": actual_min,
+                    "N max": actual_max,
+                    "N mean": float(np.mean(valid)),
+                    "NoData": src.nodata,
+                }
+            )
+
+    fig.suptitle(
+        f"{settings.project_name} — Geoid / vertical correction — {model_label}",
+        y=0.995,
+    )
+    fig.tight_layout()
+
+    settings.figure_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    png = (
+        settings.figure_dir
+        / "reference_geoid_preview.png"
+    )
+    pdf = (
+        settings.figure_dir
+        / "reference_geoid_preview.pdf"
+    )
+    fig.savefig(
+        png,
+        dpi=200,
+        bbox_inches="tight",
+    )
+    fig.savefig(
+        pdf,
+        dpi=300,
+        bbox_inches="tight",
+    )
+
+    return {
+        "figure": fig,
+        "png": png,
+        "pdf": pdf,
+        "summaries": summaries,
+        "model_label": model_label,
+    }
+
+
 def _plot_preliminary_dem_from_path(
     settings: ProjectSettings,
     dem_path: Path,
@@ -4700,7 +4861,7 @@ class FullProjectSetupUI(ProjectSetupUI):
         self.reference_dem_status = widgets.HTML(
             value=(
                 "<div style='margin:5px 0 8px 0;color:#666;'>"
-                "Prepare and inspect the two reference DEMs before starting bundle adjustment."
+                "Prepare and inspect the reference DEMs and vertical correction before starting bundle adjustment."
                 "</div>"
             )
         )
@@ -4722,20 +4883,23 @@ class FullProjectSetupUI(ProjectSetupUI):
         self.reference_dem_qc_outputs = {
             "alignment": widgets.Output(layout=widgets.Layout(width="100%", min_height="120px")),
             "mapproject": widgets.Output(layout=widgets.Layout(width="100%", min_height="120px")),
+            "geoid": widgets.Output(layout=widgets.Layout(width="100%", min_height="120px")),
         }
         self.reference_dem_qc_tabs = widgets.Tab(children=[
             self.reference_dem_qc_outputs["alignment"],
             self.reference_dem_qc_outputs["mapproject"],
+            self.reference_dem_qc_outputs["geoid"],
         ])
         self.reference_dem_qc_tabs.set_title(0, "Alignment DEM")
         self.reference_dem_qc_tabs.set_title(1, "Map-projection DEM")
+        self.reference_dem_qc_tabs.set_title(2, "Geoid / Vertical")
         self.reference_dem_qc_tabs.layout.display = "none"
         self.reference_dem_gate_note = widgets.HTML(
             value=(
                 "<div style='margin:5px 0 10px 0;padding:8px 10px;"
                 "border-left:3px solid #336699;background:#f7f9fc;"
                 "color:#555;max-width:850px;font-size:12px;line-height:1.45;'>"
-                "<b>QC gate:</b> ASP has not started yet. Inspect both DEM tabs. "
+                "<b>QC gate:</b> ASP has not started yet. Inspect the Alignment DEM, Map-projection DEM, and Geoid / Vertical tabs. "
                 "Only then run step 2. If a DEM is wrong, change the reference "
                 "settings and prepare again."
                 "</div>"
@@ -6879,18 +7043,22 @@ class FullProjectSetupUI(ProjectSetupUI):
 
     def _render_reference_dem_qc(self, settings, result):
         from IPython.display import clear_output, display
+
         products = {
             "alignment": _plot_reference_dem_from_path(
-                settings, Path(result["alignment_dem"]),
+                settings,
+                Path(result["alignment_dem"]),
                 "High-resolution alignment reference",
                 "reference_alignment_dem_preview",
             ),
             "mapproject": _plot_reference_dem_from_path(
-                settings, Path(result["mapproject_dem"]),
+                settings,
+                Path(result["mapproject_dem"]),
                 "Map-projection reference",
                 "reference_mapproject_dem_preview",
             ),
         }
+
         for key in ("alignment", "mapproject"):
             payload = products[key]
             summary = payload["summary"]
@@ -6898,20 +7066,99 @@ class FullProjectSetupUI(ProjectSetupUI):
             with out:
                 clear_output(wait=True)
                 display(payload["figure"])
-                display(self.widgets.HTML(
-                    "<div style='line-height:1.55;margin-top:6px;'>"
-                    f"<b>File:</b> <code>{html.escape(summary['Path'])}</code><br>"
-                    f"<b>CRS:</b> {html.escape(summary['CRS'])}<br>"
-                    f"<b>Raster size:</b> {summary['Width']} × {summary['Height']} px<br>"
-                    f"<b>Pixel size:</b> {summary['Pixel X']:.6g} × {summary['Pixel Y']:.6g}<br>"
-                    f"<b>Extent:</b> L {summary['Left']:.3f}, R {summary['Right']:.3f}, "
-                    f"B {summary['Bottom']:.3f}, T {summary['Top']:.3f}<br>"
-                    f"<b>Elevation range:</b> {summary['Elevation min']:.3f} to "
-                    f"{summary['Elevation max']:.3f} m<br>"
-                    f"<b>Saved PNG:</b> <code>{html.escape(str(payload['png']))}</code><br>"
-                    f"<b>Saved PDF:</b> <code>{html.escape(str(payload['pdf']))}</code>"
-                    "</div>"
-                ))
+                display(
+                    self.widgets.HTML(
+                        "<div style='line-height:1.55;margin-top:6px;'>"
+                        f"<b>File:</b> <code>{html.escape(summary['Path'])}</code><br>"
+                        f"<b>CRS:</b> {html.escape(summary['CRS'])}<br>"
+                        f"<b>Raster size:</b> {summary['Width']} × {summary['Height']} px<br>"
+                        f"<b>Pixel size:</b> {summary['Pixel X']:.6g} × {summary['Pixel Y']:.6g}<br>"
+                        f"<b>Extent:</b> L {summary['Left']:.3f}, R {summary['Right']:.3f}, "
+                        f"B {summary['Bottom']:.3f}, T {summary['Top']:.3f}<br>"
+                        f"<b>Elevation range:</b> {summary['Elevation min']:.3f} to "
+                        f"{summary['Elevation max']:.3f} m<br>"
+                        f"<b>Saved PNG:</b> <code>{html.escape(str(payload['png']))}</code><br>"
+                        f"<b>Saved PDF:</b> <code>{html.escape(str(payload['pdf']))}</code>"
+                        "</div>"
+                    )
+                )
+
+        model_label = (
+            self.reference_geoid_model.label
+            if hasattr(self.reference_geoid_model, "label")
+            else str(self.reference_geoid_model.value)
+        )
+        geoid_payload = _plot_reference_geoid_qc(
+            settings,
+            result,
+            str(model_label),
+        )
+        products["geoid"] = geoid_payload
+
+        geoid_out = self.reference_dem_qc_outputs["geoid"]
+        with geoid_out:
+            clear_output(wait=True)
+
+            if geoid_payload is None:
+                display(
+                    self.widgets.HTML(
+                        "<div style='margin:8px 0;padding:12px 14px;"
+                        "border-left:4px solid #607d8b;background:#f7f9fa;"
+                        "line-height:1.55;color:#444;'>"
+                        "<b>Vertical conversion: Not applied</b><br>"
+                        "No geoid/quasi-geoid undulation raster was required "
+                        "for the prepared reference DEMs."
+                        "</div>"
+                    )
+                )
+            else:
+                display(geoid_payload["figure"])
+
+                summary_html = [
+                    "<div style='line-height:1.55;margin-top:6px;'>",
+                    f"<b>Vertical model:</b> {html.escape(str(model_label))}<br>",
+                    "<b>Quantity:</b> geoid/quasi-geoid undulation "
+                    "<i>N</i> used in <i>h = H + N</i><br>",
+                ]
+
+                for summary in geoid_payload["summaries"]:
+                    summary_html.extend(
+                        [
+                            "<hr style='margin:8px 0;border:none;"
+                            "border-top:1px solid #ddd;'>",
+                            f"<b>{html.escape(summary['Role'])}</b><br>",
+                            f"<b>File:</b> <code>{html.escape(summary['Path'])}</code><br>",
+                            f"<b>CRS:</b> {html.escape(summary['CRS'])}<br>",
+                            f"<b>Raster size:</b> {summary['Width']} × "
+                            f"{summary['Height']} px<br>",
+                            f"<b>Pixel size:</b> {summary['Pixel X']:.6g} × "
+                            f"{summary['Pixel Y']:.6g}<br>",
+                            f"<b>Extent:</b> L {summary['Left']:.3f}, "
+                            f"R {summary['Right']:.3f}, "
+                            f"B {summary['Bottom']:.3f}, "
+                            f"T {summary['Top']:.3f}<br>",
+                            f"<b>N range:</b> {summary['N min']:.3f} to "
+                            f"{summary['N max']:.3f} m<br>",
+                            f"<b>Mean N:</b> {summary['N mean']:.3f} m<br>",
+                        ]
+                    )
+
+                summary_html.extend(
+                    [
+                        f"<b>Saved PNG:</b> "
+                        f"<code>{html.escape(str(geoid_payload['png']))}</code><br>",
+                        f"<b>Saved PDF:</b> "
+                        f"<code>{html.escape(str(geoid_payload['pdf']))}</code>",
+                        "</div>",
+                    ]
+                )
+
+                display(
+                    self.widgets.HTML(
+                        "".join(summary_html)
+                    )
+                )
+
         self.reference_dem_qc_tabs.layout.display = ""
         self.reference_dem_qc_tabs.selected_index = 0
         return products
@@ -6961,9 +7208,11 @@ class FullProjectSetupUI(ProjectSetupUI):
                 "border-left:4px solid #2e7d32;background:#f4fbf4;"
                 "color:#444;font-size:12px;line-height:1.5;'>"
                 "<b>✓ Reference DEMs prepared. ASP has NOT started.</b><br>"
-                "Inspect both tabs below before continuing.<br>"
+                "Inspect all three QC tabs below before continuing.<br>"
                 f"<b>Alignment DSM:</b> <code>{html.escape(str(result['alignment_dem']))}</code><br>"
                 f"<b>Map-projection DEM:</b> <code>{html.escape(str(result['mapproject_dem']))}</code><br>"
+                f"<b>Vertical model:</b> {html.escape(str(self.reference_geoid_model.label if hasattr(self.reference_geoid_model, 'label') else self.reference_geoid_model.value))}<br>"
+                f"<b>Geoid correction raster:</b> {'prepared' if (result.get('alignment_geoid_model_raster') or result.get('map_geoid_model_raster')) else 'not required'}<br>"
                 f"<b>Alignment coverage:</b> {float(result.get('alignment_coverage_percent', 100.0)):.1f}%<br>"
                 f"<b>Map DEM coverage:</b> {float(result.get('mapproject_coverage_percent', 100.0)):.1f}%<br>"
                 f"<b>Configuration:</b> <code>{html.escape(str(result['config_path']))}</code>"
@@ -6975,10 +7224,11 @@ class FullProjectSetupUI(ProjectSetupUI):
             self.reference_dem_progress.bar_style = "success"
             self.reference_dem_progress_text.value = (
                 "<span style='color:#2e7d32;'>Reference DEM QC ready. "
-                "Review both tabs, then run ASP.</span>"
+                "Review all three QC tabs, then run ASP.</span>"
             )
             for payload in qc.values():
-                plt.close(payload["figure"])
+                if payload is not None and payload.get("figure") is not None:
+                    plt.close(payload["figure"])
         except Exception as exc:
             self.reference_dem_progress.bar_style = "danger"
             self.reference_dem_progress_text.value = (
