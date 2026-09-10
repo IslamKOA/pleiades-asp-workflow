@@ -2,13 +2,13 @@
 
 **Release v1.5.4**
 
-A notebook-first research-software workflow for generating high-resolution digital surface models (DSMs) from **Pléiades, Pléiades NEO, and SPOT 6/7** optical stereo imagery using the **NASA Ames Stereo Pipeline (ASP)**.
+A reproducible **Python- and Jupyter-based research-software workflow** for generating high-resolution digital surface models (DSMs) from **Pléiades, Pléiades NEO, and SPOT 6/7** optical stereo imagery using the **NASA Ames Stereo Pipeline (ASP)**.
 
-The workflow integrates image preparation, metadata and stereo-geometry inspection, reference-DEM preparation, ASP pre-processing, point-cloud reconstruction, final DSM generation, and optional LiDAR-based co-registration in a guided Jupyter interface.
+- The guided Jupyter interface supports the complete DSM-generation workflow, including image preparation, metadata and stereo-geometry inspection, reference-DEM preparation, ASP pre-processing and map projection, point-cloud reconstruction, final DSM generation, and optional LiDAR-based co-registration.
 
-The reproducibility default used by the associated study is **Ames Stereo Pipeline 3.3.0**.
+- The software is implemented primarily in **Python**, with **Jupyter notebooks and interactive controls** used to manage processing parameters, execution, quality control, and outputs across the three supported satellite sensors.
 
-> **Associated manuscript:** *A Reproducible End-to-End Ames Stereo Pipeline Workflow for Generating Pléiades Tri-Stereo DSMs in High-Relief Terrain* — Islam Koa, Alain Recking, and Laurent Borgniet. The manuscript is currently under revision for **Earth and Space Science (AGU)**. The final article citation and permanent software DOI will be added after publication.
+For reproducibility of the associated study, the reference processing version is **Ames Stereo Pipeline 3.3.0**.
 
 ## What this package provides
 
@@ -28,8 +28,6 @@ The reproducibility default used by the associated study is **Ames Stereo Pipeli
   - `mapproject`
 - Point-cloud reconstruction and final DSM generation.
 - Optional co-registration in a separate xDEM notebook.
-- Existing-project resume without rerunning completed stages.
-- Restoration of saved QC tables, matrices, previews, point-cloud results, and DSM results.
 - Runtime summaries and Run / Pause / Resume / Stop controls for long processes.
 - Original scientific notebooks retained under `original_notebooks/` for traceability.
 
@@ -117,11 +115,11 @@ This workflow provides a tested orchestration and quality-control layer around A
 6. Optional co-registration (outside ASP; xDEM notebook)
 ```
 
-![Stereo and tri-stereo acquisition geometry](src/pleiades_asp_workflow/interface_bundle/figures/overview_mountain_notebook.png)
-
 The interface preserves the tested scientific processing sequence while keeping the intended parameters user-configurable.
 
 ## Prepare data and tiled DIMAP products
+
+![Stereo and tri-stereo acquisition geometry](src/pleiades_asp_workflow/interface_bundle/figures/overview_mountain_notebook.png)
 
 For tri-stereo projects, the three input folders are temporary labels during initial preparation. The **Metadata and geometry** step reads acquisition times from DIMAP metadata and normalizes the prepared views to:
 
@@ -364,9 +362,7 @@ The generated workspace contains the public notebook and the runtime modules/ass
 
 ## Data and redistribution
 
-This software archive does **not** include the original Pléiades, Pléiades NEO, or SPOT 6/7 satellite image products. Those datasets remain subject to the applicable Airbus DS / DINAMIS access and licensing conditions.
-
-The workflow code and notebooks are intended to be archived as a reproducible research-software release. The planned permanent archive is **Recherche Data Gouv**. The repository DOI and final software citation will be inserted after the public deposit and publication workflow is complete.
+This interface archive does **not** include the original Pléiades, Pléiades NEO, or SPOT 6/7 satellite image products. Those datasets remain subject to the applicable Airbus DS / DINAMIS access and licensing conditions.
 
 ## Third-party software
 
@@ -376,13 +372,16 @@ See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for attribution and redis
 
 ## Citation
 
-The final article citation and Research Data Gouv DOI are not yet available.
+### Associated manuscript
 
-Until publication, please identify the software as:
+> **Koa, I., Recking, A., & Borgniet, L.** *A Reproducible End-to-End Ames Stereo Pipeline Workflow for Generating Pléiades Tri-Stereo DSMs in High-Relief Terrain*. Manuscript under revision for **Earth and Space Science (AGU)**.
 
-> Koa, I., Recking, A., & Borgniet, L. (2026). *Pléiades ASP Workflow* (Version 1.5.4). Research software accompanying the manuscript *A Reproducible End-to-End Ames Stereo Pipeline Workflow for Generating Pléiades Tri-Stereo DSMs in High-Relief Terrain*. Manuscript under revision.
+### Research software
 
-A machine-readable provisional citation is provided in [`CITATION.cff`](CITATION.cff). Replace the provisional citation/record information with the final DOI and article citation after publication.
+The archived version of **Pléiades ASP Workflow** is available through **Research Data Gouv**.
+
+> **Koa, I., Recking, A., & Borgniet, L. (2026).** *Pléiades ASP Workflow* (Version 1.5.4). Research software. **Research Data Gouv**.  
+> DOI: **[Research Data Gouv DOI to be added]**
 
 ## License
 
