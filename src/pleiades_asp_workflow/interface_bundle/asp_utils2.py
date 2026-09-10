@@ -3,7 +3,24 @@
 asp_utils2.py
 Development interface for the first stages of the Pléiades ASP workflow.
 
-Version 0.5
+Version 1.5.4
+- conditional DIMAP tile validation with mandatory R1C1 anchor for merged products
+- existing-project detection before accidental re-preparation
+- clean new-project reset without any project-deletion control
+- restore existing reference/pre-processing/post-processing results in the interface
+- persistent project resume from project_settings.json and last-project pointer
+- immediate clearing of stale run errors when a stage is retried
+- optional co-registration notebook handoff after final DSM generation
+- explicit image-tile merge caution and reusable prepared-data detection
+- reliable embedded preliminary-DSM preview in the preprocessing tab
+- responsive Run / Pause / Resume / Stop controls for long ASP tasks
+- managed process-group termination so Stop cancels ASP child processes
+- automatic tri-stereo time normalization: A=Forward, B=Middle, C=Backward
+- restartable stage-by-stage ASP preprocessing
+- organized per-stage preprocessing parameters
+- metadata-integrated DIM vs RPC geometry comparison with parsed cam_test metrics
+- bordered analysis tables and run-mode-aware advanced preprocessing controls
+- selectable bundle-adjustment robust cost function
 - renamed sections to user-friendly titles
 - compact summaries + detailed logs saved to disk
 - no external subprocess for metadata/geometry step
@@ -20,7 +37,16 @@ import shutil
 import subprocess
 import sys
 import traceback
+import threading
+import signal
+import time
 import warnings
+
+try:
+    import psutil
+except Exception:  # optional fallback; core control still uses POSIX process groups
+    psutil = None
+
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from itertools import combinations
@@ -30,6 +56,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from xml.etree import ElementTree as ET
 
 import matplotlib.pyplot as plt
+import matplotlib as mpl
+
+mpl.rcParams["pdf.fonttype"] = 42
+mpl.rcParams["ps.fonttype"] = 42
+mpl.rcParams["text.usetex"] = False
 import numpy as np
 import pandas as pd
 import rasterio
@@ -37,7 +68,84 @@ from rasterio.enums import Resampling
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.windows import Window
 
-DEV_VERSION = "1.0.6"
+DEV_VERSION = "1.5.4"
+
+
+RUNTIME_STAGE_DEFINITIONS = (
+    (1, "prepare_data", "Prepare data"),
+    (2, "metadata_geometry", "Metadata and geometry"),
+    (3, "camera_comparison", "DIM vs RPC comparison"),
+    (4, "reference_dem", "Reference DEM preparation"),
+    (5, "bundle_adjustment", "Bundle adjustment"),
+    (6, "preliminary_stereo", "Preliminary stereo"),
+    (7, "preliminary_dem", "Preliminary DSM"),
+    (8, "lidar_alignment", "Reference alignment (pc_align)"),
+    (9, "camera_transform", "Camera transform"),
+    (10, "map_projection", "Map projection"),
+    (11, "point_cloud", "Point-cloud reconstruction"),
+    (12, "final_dsm", "Final DSM"),
+)
+
+
+def _format_runtime_seconds(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    total = int(round(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours:d} h {minutes:02d} min {secs:02d} s"
+    return f"{minutes:d} min {secs:02d} s"
+
+
+def _empty_runtime_summary() -> pd.DataFrame:
+    return pd.DataFrame([
+        {
+            "order": order,
+            "stage_key": key,
+            "stage": label,
+            "last_runtime_seconds": np.nan,
+            "last_runtime": "",
+            "last_completed": "",
+            "run_count": 0,
+        }
+        for order, key, label in RUNTIME_STAGE_DEFINITIONS
+    ])
+
+
+def _load_runtime_summary(csv_path: Path) -> pd.DataFrame:
+    base = _empty_runtime_summary().set_index("stage_key")
+    csv_path = Path(csv_path)
+    if csv_path.is_file():
+        try:
+            old = pd.read_csv(csv_path).set_index("stage_key")
+            for key in base.index.intersection(old.index):
+                for column in (
+                    "last_runtime_seconds", "last_runtime",
+                    "last_completed", "run_count",
+                ):
+                    if column in old.columns:
+                        base.loc[key, column] = old.loc[key, column]
+        except Exception:
+            pass
+    return base.reset_index().sort_values("order").reset_index(drop=True)
+
+
+def _record_runtime(settings, stage_key: str, elapsed_seconds: float) -> pd.DataFrame:
+    csv_path = settings.metadata_dir / "runtime_summary.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    df = _load_runtime_summary(csv_path)
+    mask = df["stage_key"] == str(stage_key)
+    if not mask.any():
+        return df
+    previous = pd.to_numeric(df.loc[mask, "run_count"], errors="coerce").fillna(0).iloc[0]
+    df.loc[mask, "last_runtime_seconds"] = round(float(elapsed_seconds), 3)
+    df.loc[mask, "last_runtime"] = _format_runtime_seconds(elapsed_seconds)
+    df.loc[mask, "last_completed"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    df.loc[mask, "run_count"] = int(previous) + 1
+    df.to_csv(csv_path, index=False)
+    return df
 
 
 # ============================================================
@@ -96,7 +204,11 @@ class ProjectSettings:
 
     @property
     def asp_out_dir(self) -> Path:
-        return self.project_dir / "asp_out"
+        # Keep ASP products with the active prepared imagery.  Full-image
+        # workflows (including exact DIM) always write to full_data/asp_out;
+        # legacy RPC AOI-crop workflows write to cropped_data/asp_out.
+        data_root = "cropped_data" if self.crop_enabled else "full_data"
+        return self.project_dir / data_root / "asp_out"
 
     @property
     def image_names(self) -> List[str]:
@@ -136,6 +248,490 @@ class WorkflowLog:
         self.close()
 
 
+class WorkflowCancelled(RuntimeError):
+    """Raised when the user stops an active workflow execution."""
+
+
+class ManagedProcessController:
+    """Thread-safe controller for long-running ASP/GDAL subprocesses.
+
+    Scientific commands are launched in their own POSIX process session.  The
+    controller therefore acts on the *real process group*, not only the Python
+    background worker.  v1.2.6 also verifies/records every control action so a
+    failed Pause/Resume/Stop request is visible in the notebook instead of being
+    silently ignored.
+    """
+
+    def __init__(self, state_callback=None):
+        self._lock = threading.RLock()
+        self._cancel_event = threading.Event()
+        self._resume_event = threading.Event()
+        self._resume_event.set()
+        self._process = None
+        self._task_label = ""
+        self._command_label = ""
+        self._state = "idle"
+        self._state_callback = state_callback
+        self._last_control_message = "Ready."
+        self._last_control_ok = True
+        self._callback_error = ""
+        self._terminator_thread = None
+
+    @property
+    def state(self):
+        with self._lock:
+            return self._state
+
+    @property
+    def task_label(self):
+        with self._lock:
+            return self._task_label
+
+    @property
+    def command_label(self):
+        with self._lock:
+            return self._command_label
+
+    @property
+    def cancelled(self):
+        return self._cancel_event.is_set()
+
+    @property
+    def pause_supported(self):
+        return os.name == "posix" and hasattr(signal, "SIGSTOP") and hasattr(signal, "SIGCONT")
+
+    @property
+    def has_active_process(self):
+        with self._lock:
+            return self._process is not None and self._process.poll() is None
+
+    @property
+    def active_pid(self):
+        with self._lock:
+            process = self._process
+        return None if process is None or process.poll() is not None else int(process.pid)
+
+    @property
+    def active_pgid(self):
+        pid = self.active_pid
+        if pid is None or os.name != "posix":
+            return None
+        try:
+            return int(os.getpgid(pid))
+        except Exception:
+            return None
+
+    @property
+    def last_control_message(self):
+        with self._lock:
+            return self._last_control_message
+
+    @property
+    def last_control_ok(self):
+        with self._lock:
+            return self._last_control_ok
+
+    @property
+    def callback_error(self):
+        with self._lock:
+            return self._callback_error
+
+    def _set_control_result(self, ok, message):
+        with self._lock:
+            self._last_control_ok = bool(ok)
+            self._last_control_message = str(message)
+
+    def _notify(self):
+        callback = self._state_callback
+        if callback is not None:
+            try:
+                callback(self)
+                with self._lock:
+                    self._callback_error = ""
+            except Exception as exc:
+                # Never hide a broken widget-state callback.  Keep the workflow
+                # alive, but expose the failure through the controller state.
+                with self._lock:
+                    self._callback_error = f"{type(exc).__name__}: {exc}"
+
+    def begin(self, task_label):
+        with self._lock:
+            if self._state not in {"idle", "finished", "stopped", "failed"}:
+                raise RuntimeError(
+                    f"Another workflow task is already active: {self._task_label or self._state}."
+                )
+            self._cancel_event.clear()
+            self._resume_event.set()
+            self._process = None
+            self._task_label = str(task_label)
+            self._command_label = ""
+            self._state = "running"
+            self._last_control_ok = True
+            self._last_control_message = "Run started; waiting for the first external command."
+        self._notify()
+
+    def finish(self, state="finished"):
+        with self._lock:
+            self._process = None
+            self._command_label = ""
+            self._state = state
+            self._resume_event.set()
+            if state == "finished":
+                self._last_control_ok = True
+                self._last_control_message = "Run finished."
+            elif state == "stopped":
+                self._last_control_ok = True
+                self._last_control_message = "Run stopped by user."
+            elif state == "failed":
+                self._last_control_ok = False
+                self._last_control_message = "Run failed; see the workflow error/log."
+        self._notify()
+        with self._lock:
+            self._state = "idle"
+            self._task_label = ""
+        self._notify()
+
+    def check_cancelled(self):
+        if self._cancel_event.is_set():
+            raise WorkflowCancelled("Run stopped by user.")
+
+    def wait_if_paused(self):
+        while not self._resume_event.wait(timeout=0.2):
+            self.check_cancelled()
+        self.check_cancelled()
+
+    def attach_process(self, process, command_label=""):
+        with self._lock:
+            self._process = process
+            self._command_label = str(command_label)
+            terminate_now = self._cancel_event.is_set()
+            paused = not self._resume_event.is_set()
+            pid = int(process.pid)
+        if terminate_now:
+            self._terminate_process_tree(process)
+        elif paused and self.pause_supported:
+            ok, msg = self._signal_process_tree(process, signal.SIGSTOP, "Pause")
+            self._set_control_result(ok, msg)
+        else:
+            pgid = self._safe_pgid(process)
+            extra = f", PGID {pgid}" if pgid is not None else ""
+            self._set_control_result(True, f"Active command attached: PID {pid}{extra}.")
+        self._notify()
+
+    def detach_process(self, process):
+        with self._lock:
+            if self._process is process:
+                self._process = None
+                self._command_label = ""
+                if not self._cancel_event.is_set() and self._state == "running":
+                    self._last_control_ok = True
+                    self._last_control_message = "Command finished; preparing the next workflow step."
+        self._notify()
+
+    def pause(self):
+        with self._lock:
+            if self._state == "paused":
+                self._set_control_result(True, "Run is already paused.")
+                self._notify()
+                return True
+            if self._state != "running":
+                self._set_control_result(False, f"Pause ignored because controller state is '{self._state}'.")
+                self._notify()
+                return False
+            if not self.pause_supported:
+                self._set_control_result(False, "Pause/Resume is unavailable in this non-POSIX Python environment.")
+                self._notify()
+                return False
+            self._resume_event.clear()
+            process = self._process
+
+        if process is not None and process.poll() is None:
+            ok, msg = self._signal_process_tree(process, signal.SIGSTOP, "Pause")
+            if not ok:
+                self._resume_event.set()
+                with self._lock:
+                    self._state = "running"
+                self._set_control_result(False, msg)
+                self._notify()
+                return False
+        else:
+            ok, msg = True, "Paused between external commands; the next ASP command will wait until Resume."
+
+        with self._lock:
+            self._state = "paused"
+        self._set_control_result(ok, msg)
+        self._notify()
+        return True
+
+    def resume(self):
+        with self._lock:
+            if self._state != "paused":
+                self._set_control_result(False, f"Resume ignored because controller state is '{self._state}'.")
+                self._notify()
+                return False
+            process = self._process
+
+        if process is not None and process.poll() is None:
+            ok, msg = self._signal_process_tree(process, signal.SIGCONT, "Resume")
+            if not ok:
+                self._set_control_result(False, msg)
+                self._notify()
+                return False
+        else:
+            ok, msg = True, "Resume accepted; workflow will continue with the next command."
+
+        self._resume_event.set()
+        with self._lock:
+            self._state = "running"
+        self._set_control_result(ok, msg)
+        self._notify()
+        return True
+
+    def stop(self):
+        with self._lock:
+            if self._state == "idle":
+                self._set_control_result(False, "Stop ignored because no workflow task is active.")
+                self._notify()
+                return False
+            if self._state == "stopping":
+                self._set_control_result(True, "Stop has already been requested; waiting for process termination.")
+                self._notify()
+                return True
+            self._cancel_event.set()
+            self._resume_event.set()
+            process = self._process
+            self._state = "stopping"
+            pid = None if process is None else process.pid
+            self._last_control_ok = True
+            self._last_control_message = (
+                f"Stop requested for PID {pid}; terminating the ASP process tree."
+                if pid is not None
+                else "Stop requested; cancellation will be applied at the next workflow checkpoint."
+            )
+        self._notify()
+
+        if process is not None and process.poll() is None:
+            # Do not block the ipywidget callback for the TERM/KILL grace period.
+            def terminate_worker():
+                ok, msg = self._terminate_process_tree(process, return_message=True)
+                self._set_control_result(ok, msg)
+                self._notify()
+
+            thread = threading.Thread(
+                target=terminate_worker,
+                name="pleiades-asp-stop",
+                daemon=True,
+            )
+            with self._lock:
+                self._terminator_thread = thread
+            thread.start()
+        return True
+
+    @staticmethod
+    def _safe_pgid(process):
+        if os.name != "posix" or process is None:
+            return None
+        try:
+            return int(os.getpgid(process.pid))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _descendant_processes(pid):
+        if psutil is None:
+            return []
+        try:
+            return psutil.Process(pid).children(recursive=True)
+        except Exception:
+            return []
+
+    @classmethod
+    def _signal_process_tree(cls, process, sig, action_name="Signal"):
+        if process is None or process.poll() is not None:
+            return False, f"{action_name} failed: the active process has already exited."
+
+        errors = []
+        delivered = False
+        pgid = None
+
+        if os.name == "posix":
+            try:
+                pgid = os.getpgid(process.pid)
+                os.killpg(pgid, sig)
+                delivered = True
+            except ProcessLookupError:
+                return False, f"{action_name} failed: process group no longer exists."
+            except Exception as exc:
+                errors.append(f"killpg: {type(exc).__name__}: {exc}")
+
+        # psutil is a secondary path and also reaches descendants that elected
+        # to create a different process group/session.
+        if psutil is not None:
+            try:
+                parent = psutil.Process(process.pid)
+                targets = parent.children(recursive=True) + [parent]
+                method = "suspend" if sig == getattr(signal, "SIGSTOP", None) else "resume"
+                if sig not in {getattr(signal, "SIGSTOP", None), getattr(signal, "SIGCONT", None)}:
+                    method = None
+                if method:
+                    for proc in reversed(targets):
+                        try:
+                            getattr(proc, method)()
+                            delivered = True
+                        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                            pass
+                        except Exception as exc:
+                            errors.append(f"PID {proc.pid}: {type(exc).__name__}: {exc}")
+            except Exception as exc:
+                errors.append(f"psutil: {type(exc).__name__}: {exc}")
+
+        if not delivered:
+            try:
+                process.send_signal(sig)
+                delivered = True
+            except Exception as exc:
+                errors.append(f"send_signal: {type(exc).__name__}: {exc}")
+
+        if delivered:
+            target = f"PGID {pgid}" if pgid is not None else f"PID {process.pid}"
+            suffix = f" Warnings: {'; '.join(errors)}" if errors else ""
+            return True, f"{action_name} signal delivered to {target}.{suffix}"
+        return False, f"{action_name} failed. " + ("; ".join(errors) if errors else "No signal path succeeded.")
+
+    @classmethod
+    def _terminate_process_tree(cls, process, grace_seconds=2.0, return_message=False):
+        if process is None or process.poll() is not None:
+            result = (True, "Process had already exited before Stop was applied.")
+            return result if return_message else None
+
+        pid = process.pid
+        pgid = cls._safe_pgid(process)
+        errors = []
+
+        # A stopped POSIX process should be continued before TERM so it can
+        # perform normal signal handling/cleanup.
+        if os.name == "posix" and hasattr(signal, "SIGCONT"):
+            try:
+                if pgid is not None:
+                    os.killpg(pgid, signal.SIGCONT)
+            except Exception:
+                pass
+
+        descendants = cls._descendant_processes(pid)
+
+        if os.name == "posix":
+            try:
+                if pgid is not None:
+                    os.killpg(pgid, signal.SIGTERM)
+                else:
+                    process.terminate()
+            except ProcessLookupError:
+                result = (True, f"Process group for PID {pid} had already exited.")
+                return result if return_message else None
+            except Exception as exc:
+                errors.append(f"SIGTERM group: {type(exc).__name__}: {exc}")
+                try:
+                    process.terminate()
+                except Exception as exc2:
+                    errors.append(f"terminate PID: {type(exc2).__name__}: {exc2}")
+        else:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=5,
+                )
+            except Exception as exc:
+                errors.append(f"taskkill: {type(exc).__name__}: {exc}")
+                try:
+                    process.terminate()
+                except Exception as exc2:
+                    errors.append(f"terminate PID: {type(exc2).__name__}: {exc2}")
+
+        # Explicitly terminate descendants too. This matters for launchers such
+        # as parallel_stereo that may put workers in separate groups.
+        if psutil is not None:
+            for child in descendants:
+                try:
+                    child.terminate()
+                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                    pass
+                except Exception as exc:
+                    errors.append(f"terminate child {child.pid}: {type(exc).__name__}: {exc}")
+
+        deadline = time.time() + float(grace_seconds)
+        while process.poll() is None and time.time() < deadline:
+            time.sleep(0.05)
+
+        if process.poll() is None:
+            if os.name == "posix":
+                try:
+                    if pgid is not None:
+                        os.killpg(pgid, signal.SIGKILL)
+                    else:
+                        process.kill()
+                except Exception as exc:
+                    errors.append(f"SIGKILL: {type(exc).__name__}: {exc}")
+            else:
+                try:
+                    process.kill()
+                except Exception as exc:
+                    errors.append(f"kill PID: {type(exc).__name__}: {exc}")
+
+        if psutil is not None:
+            for child in descendants:
+                try:
+                    if child.is_running():
+                        child.kill()
+                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                    pass
+                except Exception as exc:
+                    errors.append(f"kill child {child.pid}: {type(exc).__name__}: {exc}")
+
+        # Give the parent a short final window to reap.
+        final_deadline = time.time() + 1.0
+        while process.poll() is None and time.time() < final_deadline:
+            time.sleep(0.05)
+
+        ok = process.poll() is not None
+        target = f"PID {pid}" + (f" / PGID {pgid}" if pgid is not None else "")
+        if ok:
+            msg = f"Stop delivered successfully; {target} exited."
+            if errors:
+                msg += " Warnings: " + "; ".join(errors)
+        else:
+            msg = f"Stop could not verify termination of {target}."
+            if errors:
+                msg += " Errors: " + "; ".join(errors)
+        result = (ok, msg)
+        return result if return_message else None
+
+
+_EXECUTION_CONTEXT = threading.local()
+
+
+def _current_process_controller():
+    return getattr(_EXECUTION_CONTEXT, "controller", None)
+
+
+def _set_current_process_controller(controller):
+    _EXECUTION_CONTEXT.controller = controller
+
+
+def _clear_current_process_controller():
+    if hasattr(_EXECUTION_CONTEXT, "controller"):
+        delattr(_EXECUTION_CONTEXT, "controller")
+
+
+def _popen_kwargs_for_managed_process():
+    if os.name == "posix":
+        return {"start_new_session": True}
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    return {"creationflags": creationflags} if creationflags else {}
+
+
 # ============================================================
 # FOLDERS / CONFIG
 # ============================================================
@@ -173,6 +769,78 @@ def save_project_config(settings: ProjectSettings) -> Path:
     with config_path.open("w", encoding="utf-8") as stream:
         json.dump(payload, stream, indent=2)
     return config_path
+
+
+def load_project_config(project_dir: str | Path) -> ProjectSettings:
+    """Load a previously saved project without rerunning Prepare data."""
+    project_dir = Path(project_dir).expanduser().resolve()
+    config_path = project_dir / "project_settings.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"Existing project configuration not found:\n{config_path}"
+        )
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    field_names = set(ProjectSettings.__dataclass_fields__)
+    kwargs = {key: value for key, value in payload.items() if key in field_names}
+    if "tile_ids" in kwargs:
+        kwargs["tile_ids"] = tuple(kwargs["tile_ids"] or ["R1C1"])
+
+    settings = ProjectSettings(**kwargs)
+    if settings.project_dir.resolve() != project_dir:
+        # The project may have been moved after it was first created. Preserve
+        # the project folder selected by the user while keeping all source-data
+        # locations stored in project_settings.json.
+        settings.output_base = str(project_dir.parent)
+        settings.project_name = project_dir.name
+    return settings
+
+
+def inspect_existing_project(settings: ProjectSettings) -> Dict[str, object]:
+    """Inspect reusable outputs from a previous notebook/session.
+
+    This is intentionally diagnostic only: it never deletes, overwrites, or
+    regenerates a product. The interface uses it to tell the user which stages
+    can be resumed directly from disk.
+    """
+    prepared = {}
+    missing = []
+    for view in settings.image_names:
+        image = settings.merged_dir / f"{view}.tif"
+        rpc = _prepared_rpc_path(settings.merged_dir, view)
+        dim = settings.merged_dir / f"DIM_{view}.XML"
+        prepared[view] = {"image": image, "rpc": rpc, "dim": dim}
+        if not image.is_file():
+            missing.append(str(image))
+        if not rpc.is_file():
+            missing.append(str(rpc))
+
+    metadata_files = [
+        settings.metadata_dir / f"{settings.project_name}_overlap_pairs.csv",
+        settings.metadata_dir / f"{settings.project_name}_image_metadata.csv",
+        settings.metadata_dir / f"{settings.project_name}_stereo_geometry.csv",
+    ]
+    if settings.acquisition_mode == "tri_stereo":
+        metadata_files.append(
+            settings.metadata_dir / f"{settings.project_name}_view_assignment.csv"
+        )
+
+    metadata_ready = all(path.is_file() for path in metadata_files)
+    processing_state = settings.project_dir / "processing_state.json"
+    reference_config = settings.project_dir / "reference_dems" / "reference_dem_config.json"
+    final_products = settings.metadata_dir / "final_dsm_products.csv"
+
+    return {
+        "prepared_ready": not missing,
+        "prepared": prepared,
+        "missing_prepared": missing,
+        "metadata_ready": metadata_ready,
+        "metadata_files": metadata_files,
+        "processing_state": processing_state,
+        "reference_config": reference_config,
+        "final_products": final_products,
+        "final_dsm_ready": final_products.is_file(),
+    }
 
 
 # ============================================================
@@ -225,8 +893,26 @@ def validate_project_inputs(settings: ProjectSettings, log: WorkflowLog) -> Dict
         raise ValueError("Platform cannot be empty.")
     if not settings.tile_ids:
         raise ValueError("At least one Tile ID is required.")
-    if (not settings.merge_tiles) and len(settings.tile_ids) != 1:
-        raise ValueError("Merge tiles is OFF. Enter exactly one Tile ID, for example R1C1.")
+
+    normalized_tiles = tuple(str(tile).strip().upper() for tile in settings.tile_ids if str(tile).strip())
+    has_r1c1 = "R1C1" in normalized_tiles
+
+    if settings.merge_tiles:
+        if not has_r1c1:
+            raise ValueError(
+                "Merge selected image tiles is ON, but R1C1 is missing. "
+                "For one tiled DIMAP image product, include R1C1 together with every additional tile required by the image (for example R1C1,R1C2)."
+            )
+    else:
+        if len(normalized_tiles) != 1:
+            raise ValueError(
+                "Merge selected image tiles is OFF. Use only R1C1, or enable merging and include R1C1 together with the additional tile IDs."
+            )
+        if normalized_tiles[0] != "R1C1":
+            raise ValueError(
+                f"Tile {normalized_tiles[0]} was selected without R1C1. "
+                "For a tiled DIMAP image product, use R1C1 alone when no merge is needed, or enable merging and include R1C1 together with the additional tile IDs."
+            )
     if settings.crop_enabled:
         if not settings.aoi_vector.strip():
             raise ValueError("Crop is ON, but no AOI vector was selected.")
@@ -316,7 +1002,7 @@ def prepare_one_acquisition(name: str, inspected: Dict[str, object], settings: P
     dim_file = inspected["dim"]
     out_tif = settings.merged_dir / f"{name}.tif"
     out_vrt = settings.merged_dir / f"{name}.vrt"
-    out_rpc = settings.merged_dir / f"{name}.XML"
+    out_rpc = settings.merged_dir / f"RPC_{name}.XML"
     out_dim = settings.merged_dir / f"DIM_{name}.XML"
     log.write(f"Preparing acquisition {name}")
     if settings.merge_tiles and len(tile_files) > 1:
@@ -470,10 +1156,10 @@ def crop_prepared_images(settings: ProjectSettings, log: WorkflowLog):
     results = {}
     for name in settings.image_names:
         img_path = settings.merged_dir / f"{name}.tif"
-        rpc_path = settings.merged_dir / f"{name}.XML"
+        rpc_path = _prepared_rpc_path(settings.merged_dir, name)
         out_name = f"{name}_crop"
         out_img = settings.cropped_dir / f"{out_name}.tif"
-        out_rpc = settings.cropped_dir / f"{out_name}.XML"
+        out_rpc = settings.cropped_dir / f"RPC_{out_name}.XML"
         rpc_window = get_rpc_window(rpc_path, lons, lats, settings.rpc_height, settings.buffer_px)
         final_window = crop_one_rpc_image(img_path, rpc_path, out_img, out_rpc, rpc_window, settings.overwrite)
         src_dim = settings.merged_dir / f"DIM_{name}.XML"
@@ -524,19 +1210,21 @@ def make_preview(settings: ProjectSettings, cropped: bool):
     axes = axes.ravel()
     cmap = plt.get_cmap("gray").copy()
     cmap.set_bad("white")
+    view_labels = _workflow_view_display_labels(settings)
     for ax, name, array in zip(axes, settings.image_names, arrays):
         ax.imshow(array, cmap=cmap)
-        ax.set_title(f"{name} — {stage}")
+        ax.set_title(view_labels.get(name, f"Image {name}"))
         ax.set_xlabel("Column")
         ax.set_ylabel("Row")
         ax.grid(True, alpha=0.22, linewidth=0.5, linestyle="--")
-    fig.suptitle(f"{settings.project_name} — {stage} image preview")
+    stage_title = "cropped" if cropped else "prepared"
+    fig.suptitle(f"{settings.project_name} — {stage_title} image preview")
     fig.tight_layout()
     settings.figure_dir.mkdir(parents=True, exist_ok=True)
     png = settings.figure_dir / f"{stage}_images_preview.png"
     pdf = settings.figure_dir / f"{stage}_images_preview.pdf"
     fig.savefig(png, dpi=200, bbox_inches="tight")
-    fig.savefig(pdf, dpi=300, bbox_inches="tight")
+    fig.savefig(pdf, format="pdf", bbox_inches="tight")
     return {"figure": fig, "png": png, "pdf": pdf, "images": paths, "stage": stage}
 
 
@@ -594,13 +1282,30 @@ def safe_float(value):
         return None
 
 
+def _prepared_rpc_path(img_dir, image_id):
+    """Return the prepared RPC XML, preferring the unambiguous RPC_* name.
+
+    v1.2.6 writes RPC_A.XML / RPC_B.XML / RPC_C.XML (and RPC_A_crop.XML
+    for legacy cropped-RPC mode).  The fallback keeps existing projects made
+    by <=1.2.3 readable without forcing users to re-prepare their data.
+    """
+    img_dir = Path(img_dir)
+    preferred = img_dir / f"RPC_{image_id}.XML"
+    legacy = img_dir / f"{image_id}.XML"
+    if preferred.is_file():
+        return preferred
+    if legacy.is_file():
+        return legacy
+    return preferred
+
+
 def find_image_ids(img_dir):
     image_ids = []
     for filename in sorted(os.listdir(img_dir)):
         if filename.lower().endswith(".tif"):
             image_id = os.path.splitext(filename)[0]
             tif_path = os.path.join(img_dir, f"{image_id}.tif")
-            rpc_path = os.path.join(img_dir, f"{image_id}.XML")
+            rpc_path = _prepared_rpc_path(img_dir, image_id)
             if os.path.isfile(tif_path) and os.path.isfile(rpc_path):
                 image_ids.append(image_id)
     return image_ids
@@ -648,7 +1353,7 @@ def build_footprints(img_dir, image_ids):
     footprints = {}
     for image_id in image_ids:
         img_path = os.path.join(img_dir, f"{image_id}.tif")
-        rpc_path = os.path.join(img_dir, f"{image_id}.XML")
+        rpc_path = _prepared_rpc_path(img_dir, image_id)
         rpc = get_rpc_params(rpc_path)
         footprints[image_id] = approximate_footprint(img_path, rpc)
     return footprints
@@ -685,7 +1390,7 @@ def parse_dim_xml(xml_path):
 
 def extract_dim_metadata(root, xml_path):
     image_id = extract_image_id_from_dim(xml_path)
-    metadata = {"image_id": image_id, "dim_file": os.path.basename(xml_path), "tif_file": f"{image_id}.tif", "rpc_file": f"{image_id}.XML"}
+    metadata = {"image_id": image_id, "dim_file": os.path.basename(xml_path), "tif_file": f"{image_id}.tif", "rpc_file": f"RPC_{image_id}.XML"}
     target_tags = {"NBANDS", "NBITS", "FOCAL_LENGTH", "AZIMUTH_ANGLE", "VIEWING_ANGLE_ACROSS_TRACK", "VIEWING_ANGLE_ALONG_TRACK", "VIEWING_ANGLE", "INCIDENCE_ANGLE_ALONG_TRACK", "INCIDENCE_ANGLE_ACROSS_TRACK", "INCIDENCE_ANGLE", "SUN_AZIMUTH", "SUN_ELEVATION", "IMAGING_DATE", "IMAGING_TIME"}
     for elem in root.iter():
         tag = clean_tag(elem.tag)
@@ -701,6 +1406,29 @@ def extract_dim_metadata(root, xml_path):
     return metadata
 
 
+def _metadata_acquisition_datetime(metadata_df: pd.DataFrame) -> pd.Series:
+    """Return acquisition datetimes used to normalize tri-stereo view order."""
+    if metadata_df.empty:
+        return pd.Series(dtype="datetime64[ns]")
+
+    if "IMAGING_DATE" not in metadata_df.columns or "IMAGING_TIME" not in metadata_df.columns:
+        return pd.Series(pd.NaT, index=metadata_df.index, dtype="datetime64[ns]")
+
+    text = (
+        metadata_df["IMAGING_DATE"].fillna("").astype(str).str.strip()
+        + " "
+        + metadata_df["IMAGING_TIME"].fillna("").astype(str).str.strip()
+    )
+
+    # utc=True also accepts common DIMAP time strings ending in Z.  Convert
+    # back to timezone-naive timestamps solely for deterministic sorting.
+    parsed = pd.to_datetime(text, errors="coerce", utc=True)
+    try:
+        return parsed.dt.tz_convert(None)
+    except Exception:
+        return parsed
+
+
 def build_image_metadata_table(img_dir, image_ids):
     records = []
     for image_id in image_ids:
@@ -711,18 +1439,263 @@ def build_image_metadata_table(img_dir, image_ids):
         if root is None:
             continue
         records.append(extract_dim_metadata(root, dim_path))
+
     metadata_df = pd.DataFrame(records)
     if metadata_df.empty:
         return metadata_df
-    if "IMAGING_DATE" in metadata_df.columns and "IMAGING_TIME" in metadata_df.columns:
-        metadata_df = metadata_df.sort_values(by=["IMAGING_DATE", "IMAGING_TIME"]).reset_index(drop=True)
+
+    acquisition_dt = _metadata_acquisition_datetime(metadata_df)
+    if acquisition_dt.notna().any():
+        metadata_df = metadata_df.assign(_acquisition_dt=acquisition_dt)
+        metadata_df = metadata_df.sort_values(
+            by=["_acquisition_dt", "image_id"], na_position="last"
+        ).reset_index(drop=True)
+        metadata_df = metadata_df.drop(columns=["_acquisition_dt"])
+    elif "IMAGING_DATE" in metadata_df.columns and "IMAGING_TIME" in metadata_df.columns:
+        metadata_df = metadata_df.sort_values(
+            by=["IMAGING_DATE", "IMAGING_TIME", "image_id"]
+        ).reset_index(drop=True)
+
     if len(metadata_df) == 3:
-        metadata_df.insert(1, "view_order", ["Forward", "Middle", "Backward"])
+        metadata_df.insert(
+            1,
+            "view_order",
+            [
+                "Forward (F)",
+                "Middle / near-nadir (M)",
+                "Backward (B)",
+            ],
+        )
     elif len(metadata_df) == 2:
         metadata_df.insert(1, "view_order", ["Image_1", "Image_2"])
     else:
-        metadata_df.insert(1, "view_order", [f"Image_{i+1}" for i in range(len(metadata_df))])
+        metadata_df.insert(
+            1,
+            "view_order",
+            [f"Image_{i+1}" for i in range(len(metadata_df))],
+        )
     return metadata_df
+
+
+TRI_STEREO_WORKFLOW_VIEWS = (
+    ("A", "Forward", "F"),
+    ("B", "Middle / near-nadir", "M"),
+    ("C", "Backward", "B"),
+)
+
+
+def _workflow_view_display_labels(settings: ProjectSettings) -> Dict[str, str]:
+    """Human-readable view titles aligned with the schematic acquisition figure."""
+    if getattr(settings, "acquisition_mode", "tri_stereo") == "tri_stereo":
+        return {
+            "A": "Forward image (F)",
+            "B": "Near-nadir (Middle) image (M)",
+            "C": "Backward image (B)",
+        }
+    return {
+        "A": "Forward image (F)",
+        "B": "Backward image (B)",
+    }
+
+
+def _tri_stereo_time_assignment(metadata_df: pd.DataFrame) -> Tuple[Dict[str, str], pd.DataFrame]:
+    """
+    Map the three prepared input slots to the workflow's fixed A/B/C meaning.
+
+    Chronological acquisition order is interpreted as:
+        earliest -> A = Forward (F)
+        middle   -> B = Middle / near-nadir (M)
+        latest   -> C = Backward (B)
+
+    The mapping is intentionally based on DIMAP acquisition time, not on the
+    folder slot selected by the user.
+    """
+    if len(metadata_df) != 3 or "image_id" not in metadata_df.columns:
+        raise ValueError(
+            "Automatic Forward/Middle/Backward assignment requires exactly "
+            "three prepared images with DIM metadata."
+        )
+
+    dt = _metadata_acquisition_datetime(metadata_df)
+    if dt.isna().any():
+        missing = metadata_df.loc[dt.isna(), "image_id"].astype(str).tolist()
+        raise ValueError(
+            "Cannot determine tri-stereo acquisition order because IMAGING_DATE/"
+            "IMAGING_TIME is missing or invalid for: " + ", ".join(missing)
+        )
+
+    if dt.duplicated().any():
+        raise ValueError(
+            "Cannot determine a unique Forward/Middle/Backward order because "
+            "two or more DIM files have the same acquisition timestamp."
+        )
+
+    ordered = (
+        metadata_df.assign(_acquisition_dt=dt)
+        .sort_values("_acquisition_dt")
+        .reset_index(drop=True)
+    )
+
+    mapping = {}
+    rows = []
+    for index, (workflow_id, role, figure_symbol) in enumerate(TRI_STEREO_WORKFLOW_VIEWS):
+        row = ordered.iloc[index]
+        old_id = str(row["image_id"])
+        mapping[old_id] = workflow_id
+        rows.append(
+            {
+                "input_label_before_normalization": old_id,
+                "assigned_workflow_id": workflow_id,
+                "view_role": role,
+                "figure_symbol": figure_symbol,
+                "IMAGING_DATE": row.get("IMAGING_DATE"),
+                "IMAGING_TIME": row.get("IMAGING_TIME"),
+                "acquisition_datetime": row["_acquisition_dt"].isoformat(),
+            }
+        )
+
+    return mapping, pd.DataFrame(rows)
+
+
+def _view_asset_specs(settings: ProjectSettings, view: str):
+    """All prepared files whose basename carries an A/B/C workflow view."""
+    specs = [
+        (settings.merged_dir / f"{view}.tif", settings.merged_dir, "{view}.tif"),
+        (settings.merged_dir / f"RPC_{view}.XML", settings.merged_dir, "RPC_{view}.XML"),
+        # Legacy <=1.2.3 prepared RPC naming; renamed only when it exists.
+        (settings.merged_dir / f"{view}.XML", settings.merged_dir, "{view}.XML"),
+        (settings.merged_dir / f"DIM_{view}.XML", settings.merged_dir, "DIM_{view}.XML"),
+        (settings.merged_dir / f"{view}.vrt", settings.merged_dir, "{view}.vrt"),
+    ]
+    if settings.cropped_dir.exists():
+        specs.extend(
+            [
+                (settings.cropped_dir / f"{view}_crop.tif", settings.cropped_dir, "{view}_crop.tif"),
+                (settings.cropped_dir / f"RPC_{view}_crop.XML", settings.cropped_dir, "RPC_{view}_crop.XML"),
+                # Legacy <=1.2.3 cropped RPC naming.
+                (settings.cropped_dir / f"{view}_crop.XML", settings.cropped_dir, "{view}_crop.XML"),
+                (settings.cropped_dir / f"DIM_{view}_crop.XML", settings.cropped_dir, "DIM_{view}_crop.XML"),
+            ]
+        )
+    return specs
+
+
+def _normalize_tri_stereo_prepared_files(
+    settings: ProjectSettings,
+    metadata_df: pd.DataFrame,
+    log: WorkflowLog,
+):
+    """Atomically relabel prepared A/B/C products into time-normalized F/M/B order."""
+    mapping, assignment_df = _tri_stereo_time_assignment(metadata_df)
+
+    source_folders = settings.acquisition_folders
+    assignment_df.insert(
+        1,
+        "source_acquisition_folder",
+        assignment_df["input_label_before_normalization"].map(
+            lambda old: str(source_folders.get(str(old), ""))
+        ),
+    )
+
+    if set(mapping) != {"A", "B", "C"}:
+        raise ValueError(
+            "Automatic tri-stereo normalization currently expects prepared image IDs "
+            "A, B and C. Found: " + ", ".join(sorted(mapping))
+        )
+
+    identity = all(old == new for old, new in mapping.items())
+    if identity:
+        log.write("Tri-stereo view assignment already normalized: A=F, B=M, C=B.")
+    else:
+        log.write("Normalizing prepared tri-stereo files by DIM acquisition time:")
+        for old, new in mapping.items():
+            log.write(f"  {old} -> {new}")
+
+        staged = []
+        # First move every existing source to a collision-safe temporary name.
+        for old, new in mapping.items():
+            if old == new:
+                continue
+            for source, parent, pattern in _view_asset_specs(settings, old):
+                if not source.exists():
+                    continue
+                temp = parent / f".__vieworder_tmp__{old}__{source.name}"
+                if temp.exists():
+                    temp.unlink()
+                source.replace(temp)
+                destination = parent / pattern.format(view=new)
+                staged.append((temp, destination))
+
+        # Then place all staged files under their normalized workflow IDs.
+        for temp, destination in staged:
+            if destination.exists():
+                destination.unlink()
+            temp.replace(destination)
+            log.write(f"  renamed -> {destination}")
+
+    assignment_csv = settings.metadata_dir / f"{settings.project_name}_view_assignment.csv"
+    assignment_df.to_csv(assignment_csv, index=False)
+
+    # Persist the normalization map alongside the user's original folder slots.
+    config_path = settings.project_dir / "project_settings.json"
+    if config_path.exists():
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        payload["normalized_view_assignment"] = {
+            row["assigned_workflow_id"]: {
+                "role": row["view_role"],
+                "figure_symbol": row["figure_symbol"],
+                "input_label_before_normalization": row["input_label_before_normalization"],
+                "source_acquisition_folder": row["source_acquisition_folder"],
+                "acquisition_datetime": row["acquisition_datetime"],
+            }
+            for row in assignment_df.to_dict("records")
+        }
+        config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    return mapping, assignment_df, assignment_csv
+
+
+def _tri_stereo_normalization_ready(settings: ProjectSettings) -> bool:
+    """Return True when an existing project already records F/M/B normalization.
+
+    New projects store the assignment in project_settings.json.  Older/reopened
+    projects may already have the persisted view-assignment CSV, so that file is
+    also accepted after validating that it assigns A/B/C exactly once.  This
+    avoids forcing Metadata and geometry to be rerun merely because the notebook
+    was closed after normalization had already completed.
+    """
+    if settings.acquisition_mode != "tri_stereo":
+        return True
+
+    config_path = settings.project_dir / "project_settings.json"
+    if config_path.is_file():
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        assignment = payload.get("normalized_view_assignment")
+        if isinstance(assignment, dict) and set(assignment) == {"A", "B", "C"}:
+            return True
+
+    assignment_csv = settings.metadata_dir / f"{settings.project_name}_view_assignment.csv"
+    if assignment_csv.is_file():
+        try:
+            df = pd.read_csv(assignment_csv)
+            if "assigned_workflow_id" in df.columns:
+                values = [str(v).strip() for v in df["assigned_workflow_id"].dropna()]
+                if len(values) == 3 and set(values) == {"A", "B", "C"}:
+                    return all(
+                        (settings.merged_dir / f"{view}.tif").is_file()
+                        and _prepared_rpc_path(settings.merged_dir, view).is_file()
+                        for view in ("A", "B", "C")
+                    )
+        except Exception:
+            pass
+
+    return False
 
 
 class ImageGeometry:
@@ -779,7 +1752,7 @@ def build_stereo_geometry_table(metadata_df, pairs):
     return pd.DataFrame(records)
 
 
-PREFERRED_METADATA_ORDER = ["view_order", "tif_file", "rpc_file", "dim_file", "IMAGING_DATE", "IMAGING_TIME", "NBANDS", "NBITS", "FOCAL_LENGTH", "AZIMUTH_ANGLE", "VIEWING_ANGLE_ACROSS_TRACK", "VIEWING_ANGLE_ALONG_TRACK", "VIEWING_ANGLE", "INCIDENCE_ANGLE_ALONG_TRACK", "INCIDENCE_ANGLE_ACROSS_TRACK", "INCIDENCE_ANGLE", "SUN_AZIMUTH", "SUN_ELEVATION"]
+PREFERRED_METADATA_ORDER = ["view_order", "workflow_assignment", "tif_file", "rpc_file", "dim_file", "IMAGING_DATE", "IMAGING_TIME", "NBANDS", "NBITS", "FOCAL_LENGTH", "AZIMUTH_ANGLE", "VIEWING_ANGLE_ACROSS_TRACK", "VIEWING_ANGLE_ALONG_TRACK", "VIEWING_ANGLE", "INCIDENCE_ANGLE_ALONG_TRACK", "INCIDENCE_ANGLE_ACROSS_TRACK", "INCIDENCE_ANGLE", "SUN_AZIMUTH", "SUN_ELEVATION"]
 
 
 def run_metadata_geometry(settings: ProjectSettings, iou_threshold: float = 0.05, custom_pairs_text: str = ""):
@@ -790,15 +1763,61 @@ def run_metadata_geometry(settings: ProjectSettings, iou_threshold: float = 0.05
         try:
             image_ids = find_image_ids(str(work_dir))
             if len(image_ids) < 2:
-                raise RuntimeError(f"At least two prepared image/RPC pairs are required in {work_dir}. Found: {image_ids}")
-            pairs_arg = [x for x in custom_pairs_text.replace(',', ' ').split() if x.strip()]
+                raise RuntimeError(
+                    f"At least two prepared image/RPC pairs are required in {work_dir}. "
+                    f"Found: {image_ids}"
+                )
+
+            # Read DIM metadata before pair geometry so a tri-stereo dataset can
+            # be normalized into the fixed workflow convention used by the
+            # representative figure and every later ASP stage:
+            # A = Forward (F), B = Middle / near-nadir (M), C = Backward (B).
+            initial_metadata_df = build_image_metadata_table(str(work_dir), image_ids)
+            assignment_df = pd.DataFrame()
+            assignment_csv = None
+            assignment_mapping = {}
+
+            if settings.acquisition_mode == "tri_stereo":
+                assignment_mapping, assignment_df, assignment_csv = (
+                    _normalize_tri_stereo_prepared_files(
+                        settings,
+                        initial_metadata_df,
+                        log,
+                    )
+                )
+                image_ids = find_image_ids(str(work_dir))
+
+            pairs_arg = [
+                x
+                for x in custom_pairs_text.replace(',', ' ').split()
+                if x.strip()
+            ]
             user_pairs = parse_pairs_argument(pairs_arg)
             pairs = list(combinations(image_ids, 2)) if user_pairs is None else user_pairs
-            log.write(f"Detected prepared image IDs: {image_ids}")
+
+            log.write(f"Detected normalized prepared image IDs: {image_ids}")
+            if settings.acquisition_mode == "tri_stereo":
+                log.write("Workflow convention: A=Forward (F), B=Middle/near-nadir (M), C=Backward (B)")
             log.write(f"Pairs: {pairs}")
+
             footprints = build_footprints(str(work_dir), image_ids)
             overlap_df = compute_overlap_table(footprints, pairs, iou_threshold)
             metadata_df = build_image_metadata_table(str(work_dir), image_ids)
+
+            if settings.acquisition_mode == "tri_stereo" and not metadata_df.empty:
+                role_by_id = {
+                    "A": ("Forward", "F"),
+                    "B": ("Middle / near-nadir", "M"),
+                    "C": ("Backward", "B"),
+                }
+                metadata_df["workflow_assignment"] = metadata_df["image_id"].map(
+                    lambda x: (
+                        f"{x} = {role_by_id[str(x)][0]} ({role_by_id[str(x)][1]})"
+                        if str(x) in role_by_id
+                        else str(x)
+                    )
+                )
+
             geometry_df = build_stereo_geometry_table(metadata_df, pairs)
             overlap_csv = settings.metadata_dir / f"{settings.project_name}_overlap_pairs.csv"
             metadata_csv = settings.metadata_dir / f"{settings.project_name}_image_metadata.csv"
@@ -806,18 +1825,39 @@ def run_metadata_geometry(settings: ProjectSettings, iou_threshold: float = 0.05
             overlap_df.to_csv(overlap_csv, index=False)
             metadata_df.to_csv(metadata_csv, index=False)
             geometry_df.to_csv(geometry_csv, index=False)
+
             if 'image_id' not in metadata_df.columns:
                 metadata_vertical_df = pd.DataFrame()
             else:
-                metadata_vertical_df = metadata_df.set_index('image_id').T.reset_index().rename(columns={'index': 'Parameter'})
-                existing_preferred = [p for p in PREFERRED_METADATA_ORDER if p in metadata_vertical_df['Parameter'].values]
-                remaining = [p for p in metadata_vertical_df['Parameter'].values if p not in existing_preferred]
-                metadata_vertical_df = metadata_vertical_df.set_index('Parameter').loc[existing_preferred + remaining].reset_index()
+                metadata_vertical_df = (
+                    metadata_df.set_index('image_id')
+                    .T.reset_index()
+                    .rename(columns={'index': 'Parameter'})
+                )
+                existing_preferred = [
+                    p
+                    for p in PREFERRED_METADATA_ORDER
+                    if p in metadata_vertical_df['Parameter'].values
+                ]
+                remaining = [
+                    p
+                    for p in metadata_vertical_df['Parameter'].values
+                    if p not in existing_preferred
+                ]
+                metadata_vertical_df = (
+                    metadata_vertical_df.set_index('Parameter')
+                    .loc[existing_preferred + remaining]
+                    .reset_index()
+                )
+
             return {
                 'work_dir': work_dir,
                 'overlap': overlap_df,
                 'metadata': metadata_vertical_df,
                 'geometry': geometry_df,
+                'assignment': assignment_df,
+                'assignment_mapping': assignment_mapping,
+                'assignment_csv': assignment_csv,
                 'overlap_csv': overlap_csv,
                 'metadata_csv': metadata_csv,
                 'geometry_csv': geometry_csv,
@@ -841,6 +1881,7 @@ class ProjectSetupUI:
         self.ImageClass = Image
         self.last_prepare = None
         self.last_metadata = None
+        self._loaded_project_dir = None
         style = {"description_width": "185px"}
         wide = widgets.Layout(width="780px")
         # Publication/software cover is provided by the first Markdown cell
@@ -865,9 +1906,9 @@ class ProjectSetupUI:
             layout=wide,
         )
         self.acquisition_mode = widgets.ToggleButtons(options=[("Stereo — A/B", "stereo"), ("Tri-stereo — A/B/C", "tri_stereo")], value="tri_stereo", description="Acquisition:", style=style)
-        self.acquisition_A = widgets.Text(description="Acquisition A folder:", placeholder="/path/to/Pleiades_1/IMG_PHR1A_P_001", style=style, layout=wide)
-        self.acquisition_B = widgets.Text(description="Acquisition B folder:", placeholder="/path/to/Pleiades_2/IMG_PHR1A_P_001", style=style, layout=wide)
-        self.acquisition_C = widgets.Text(description="Acquisition C folder:", placeholder="/path/to/Pleiades_3/IMG_PHR1A_P_001", style=style, layout=wide)
+        self.acquisition_A = widgets.Text(description="Input folder 1:", placeholder="/path/to/Pleiades_1/IMG_PHR1A_P_001", style=style, layout=wide)
+        self.acquisition_B = widgets.Text(description="Input folder 2:", placeholder="/path/to/Pleiades_2/IMG_PHR1A_P_001", style=style, layout=wide)
+        self.acquisition_C = widgets.Text(description="Input folder 3:", placeholder="/path/to/Pleiades_3/IMG_PHR1A_P_001", style=style, layout=wide)
         self.merge_tiles = widgets.Checkbox(value=False, description="Merge selected image tiles", indent=False)
         self.tile_ids = widgets.Text(value="R1C1", description="Tile ID(s):", style=style, layout=wide)
         self.crop_enabled = widgets.Checkbox(value=False, description="Crop prepared images to an AOI", indent=False)
@@ -876,15 +1917,54 @@ class ProjectSetupUI:
         self.buffer_px = widgets.IntText(value=500, description="Crop buffer (px):", style=style)
         self.spacing_deg = widgets.FloatText(value=0.00005, description="AOI spacing (deg):", style=style)
         self.overwrite = widgets.Checkbox(value=False, description="Overwrite existing outputs", indent=False)
-        self.run_stage1 = widgets.Button(description="Run prepare data", button_style="success", icon="play", layout=widgets.Layout(width="240px", height="42px"))
+
+        # Resume an existing project without repeating Prepare data. The
+        # complete input/source paths are restored from project_settings.json.
+        self.existing_project_dir = widgets.Text(
+            description="Existing project folder:",
+            placeholder="/path/to/previous/project",
+            style=style,
+            layout=wide,
+        )
+        self.load_existing_project = widgets.Button(
+            description="Load / resume existing project",
+            button_style="info",
+            icon="folder-open",
+            layout=widgets.Layout(width="285px", height="40px"),
+        )
+        self.resume_project_status = widgets.HTML(
+            "<span style='color:#666;'>New project. Existing projects can be resumed from their saved project_settings.json.</span>"
+        )
+
+        # New-project reset only. This never deletes project files on disk.
+        self.start_clean_project = widgets.Button(
+            description="Start new project / clear form",
+            button_style="",
+            icon="refresh",
+            layout=widgets.Layout(width="260px", height="38px"),
+        )
+        self.clean_project_status = widgets.HTML("")
+
+        # Context-sensitive validation messages. Keep the interface clean: these
+        # panels are hidden unless the current inputs require user attention.
+        self.tile_merge_caution = widgets.HTML("")
+        self.project_exists_notice = widgets.HTML("")
+
+        self.run_stage1 = widgets.Button(description="Run prepare data", button_style="info", icon="play", layout=widgets.Layout(width="240px", height="42px"))
         self.stage1_progress = widgets.IntProgress(value=0, min=0, max=100, description="Progress:", style={"description_width": "80px"}, layout=widgets.Layout(width="720px"))
         self.stage1_progress_text = widgets.HTML("<span style='color:#666;'>Waiting.</span>")
         self.stage1_summary = widgets.HTML()
+        self.stage1_summary_details = widgets.Accordion(children=[self.stage1_summary])
+        self.stage1_summary_details.set_title(0, "Run details / processing summary")
+        self.stage1_summary_details.selected_index = None
         self.stage1_preview = widgets.Output(layout=widgets.Layout(border="1px solid #ddd", padding="6px", width="100%"))
         self.iou_threshold = widgets.FloatText(value=0.05, description="IoU threshold:", style=style)
         self.custom_pairs = widgets.Text(value="", description="Custom pairs:", placeholder="Leave blank for automatic pairs; e.g. A:B A:C B:C", style=style, layout=wide)
         self.run_stage2 = widgets.Button(description="Run metadata and geometry", button_style="info", icon="table", layout=widgets.Layout(width="280px", height="42px"))
         self.stage2_summary = widgets.HTML()
+        self.stage2_summary_details = widgets.Accordion(children=[self.stage2_summary])
+        self.stage2_summary_details.set_title(0, "Run details / processing summary")
+        self.stage2_summary_details.selected_index = None
         self.stage2_tables_box = widgets.VBox()
         # Persistent concept-figure container.
         #
@@ -899,14 +1979,33 @@ class ProjectSetupUI:
             ),
         )
 
+        self.metadata_geometry_header = widgets.HTML(value="")
+
+        # Persistent runtime summary. One row is kept for each workflow stage;
+        # rerunning a stage replaces its previous runtime rather than appending
+        # duplicate rows. The CSV is saved under metadata/runtime_summary.csv.
+        self._runtime_stage_starts = {}
+        self._runtime_lock = threading.Lock()
+        self.runtime_summary_table = widgets.HTML(value="")
+        self.runtime_summary_path = widgets.HTML(value="")
+
+        self.resume_project_rows = [
+            self._row(
+                self.existing_project_dir,
+                "Select the project folder created by an earlier run. Its project_settings.json restores the project name, original input folders, tile selection, AOI settings, and output base path. Prepared products already on disk are reused; Prepare data does not need to be rerun.",
+            ),
+            self.load_existing_project,
+            self.resume_project_status,
+        ]
+
         self.common_rows = [
             self._row(self.project_name, "Short project name. A folder with this name is created inside the Output base folder. Example: Berarde_Aug24."),
             self._row(self.output_base, "Parent folder only. Do not add the project name or merged_tiles. Example: /mnt/summer/USERS/KOAI/Software."),
             self._row(self.platform, "Sensor/platform code used to find RPC_<Platform>*.XML and DIM_<Platform>*.XML. Presets include Pléiades (PHR1A/PHR1B), Pléiades Neo (PNEO3/PNEO4), and SPOT 6/7; another compatible code may also be typed."),
-            self._row(self.acquisition_mode, "Stereo uses A/B. Tri-stereo uses A/B/C."),
-            self._row(self.acquisition_A, "IMG_* folder for the first acquisition. It should contain the selected image tile(s), RPC XML and DIM XML."),
-            self._row(self.acquisition_B, "IMG_* folder for the second acquisition."),
-            self._row(self.acquisition_C, "IMG_* folder for the third acquisition. Used only for tri-stereo."),
+            self._row(self.acquisition_mode, "Stereo requires two input acquisitions; tri-stereo requires three."),
+            self._row(self.acquisition_A, "Input acquisition folder containing the selected Pléiades/compatible DIMAP image product."),
+            self._row(self.acquisition_B, "Input acquisition folder containing the selected Pléiades/compatible DIMAP image product."),
+            self._row(self.acquisition_C, "Third input acquisition folder, used only when Tri-stereo is selected."),
             self._row(self.merge_tiles, "OFF: use one selected tile only. ON: merge several DIMAP tiles into one A/B/C image. Example ON: R1C1,R1C2,R2C1,R2C2."),
             self._row(self.tile_ids, "Tile ID(s) searched in every acquisition. When merge is OFF, use exactly one, e.g. R1C1. When ON, separate IDs by commas."),
             self._row(self.crop_enabled, "OFF: use full prepared A/B(/C). ON: additionally create A_crop/B_crop/C_crop in merged_tiles/cropped_images. Raw data are never modified."),
@@ -925,23 +2024,46 @@ class ProjectSetupUI:
         self.crop_box = widgets.VBox(self.crop_rows)
         self.acquisition_mode.observe(self._update_visibility, names="value")
         self.crop_enabled.observe(self._update_visibility, names="value")
+        self.merge_tiles.observe(self._update_tile_validation_message, names="value")
+        self.tile_ids.observe(self._update_tile_validation_message, names="value")
+        self.load_existing_project.on_click(self._on_load_existing_project)
+        self.start_clean_project.on_click(self._on_start_clean_project)
         self.run_stage1.on_click(self._on_stage1)
         self.run_stage2.on_click(self._on_stage2)
         self._update_visibility()
         self.container = widgets.VBox([
             self.title,
-            widgets.HTML("<hr><h4>Prepare data</h4><div style='color:#666;margin-bottom:8px;'>Organize the project folders, prepare A/B(/C), optionally crop to an AOI, and save a compact image preview.</div>"),
-            widgets.HTML("<b>1. Project</b>"), *self.common_rows[:3],
-            widgets.HTML("<br><b>2. Input acquisitions</b>"), *self.common_rows[3:7],
-            widgets.HTML("<br><b>3. Image tile preparation</b>"), *self.common_rows[7:9],
+            widgets.HTML("<hr><div style='margin:12px 0 10px 0;padding:12px 14px;border-left:6px solid #1976d2;background:#eef5fb;border-radius:3px;'><div style='font-size:20px;font-weight:700;color:#17324d;'>Prepare data</div><div style='color:#5f6b76;font-size:13px;margin-top:5px;line-height:1.5;'>Organize the project folders, prepare A/B(/C), optionally crop to an AOI, and save a compact image preview.</div></div>"),
+            widgets.HTML("<div style='margin:2px 0 7px 0;font-weight:700;color:#444;'>New project</div>"),
+            self.start_clean_project,
+            self.clean_project_status,
+            widgets.HTML("<hr style='margin:12px 0 10px 0;border:none;border-top:1px solid #ddd;'>"),
+            widgets.HTML("<b>1. Project</b>"),
+            widgets.HTML("<div style='margin:4px 0 8px 0;color:#555;font-size:12px;'><b>Resume:</b> load a previous project to restore its saved input locations and continue from existing products without rerunning completed stages.</div>"),
+            *self.resume_project_rows,
+            widgets.HTML("<div style='margin:10px 0 5px 0;color:#666;font-size:12px;'>Or define a new project:</div>"),
+            *self.common_rows[:3],
+            self.project_exists_notice,
+            widgets.HTML("<br><b>2. Input acquisitions</b>"), self.common_rows[3], *self.common_rows[4:7],
+            widgets.HTML("<br><b>3. Image tile preparation</b>"), *self.common_rows[7:9], self.tile_merge_caution,
             widgets.HTML("<br><b>4. Optional AOI crop</b>"), self.common_rows[9], self.crop_box,
             widgets.HTML("<br><b>5. Output protection</b>"), self.overwrite_row,
-            widgets.HTML("<br>"), self.run_stage1, self.stage1_progress, self.stage1_progress_text, self.stage1_summary, self.stage1_preview,
-            widgets.HTML("<hr><h4>Metadata and geometry</h4><div style='color:#666;margin-bottom:8px;'>This step uses the full prepared A/B(/C) files in <code>merged_tiles</code>, matching the original metadata workflow even when an AOI crop was also created.</div>"),
+            widgets.HTML("<br>"), self.run_stage1, self.stage1_progress, self.stage1_progress_text, self.stage1_summary_details, self.stage1_preview,
+            self.metadata_geometry_header,
             self.concept_figure,
-            *self.block2_rows, widgets.HTML("<br>"), self.run_stage2, self.stage2_summary, self.stage2_tables_box
+            *self.block2_rows, widgets.HTML("<br>"), self.run_stage2, self.stage2_summary_details, self.stage2_tables_box
         ], layout=widgets.Layout(width="100%"))
         self._display_concept_figure()
+        self.project_name.observe(self._on_runtime_project_change, names="value")
+        self.output_base.observe(self._on_runtime_project_change, names="value")
+        self._update_tile_validation_message()
+        self._update_existing_project_notice()
+
+        # Restore the last project used from this workspace when possible.
+        # This only restores widget values and detects existing products; it
+        # never reruns scientific processing automatically.
+        self._try_restore_last_project()
+        self._refresh_runtime_summary()
 
     def _help_icon(self, text):
         safe = html.escape(text, quote=True)
@@ -950,10 +2072,110 @@ class ProjectSetupUI:
     def _row(self, widget, help_text):
         return self.widgets.HBox([widget, self._help_icon(help_text)], layout=self.widgets.Layout(width="100%", align_items="center"))
 
+    def _parsed_tile_ids(self):
+        return tuple(
+            part.strip().upper()
+            for part in self.tile_ids.value.replace(";", ",").split(",")
+            if part.strip()
+        )
+
+    def _update_tile_validation_message(self, change=None):
+        tiles = self._parsed_tile_ids()
+        if not tiles:
+            self.tile_merge_caution.value = (
+                "<div style='margin:6px 0 8px 205px;padding:8px 10px;"
+                "border-left:4px solid #b00020;background:#fff4f4;color:#444;"
+                "max-width:780px;font-size:12px;line-height:1.45;'>"
+                "<b>Tile selection required.</b> Enter <code>R1C1</code>, or enable merging and include <code>R1C1</code> with the additional tile IDs.</div>"
+            )
+            return
+
+        has_r1c1 = "R1C1" in tiles
+        if self.merge_tiles.value and not has_r1c1:
+            self.tile_merge_caution.value = (
+                "<div style='margin:6px 0 8px 205px;padding:8px 10px;"
+                "border-left:4px solid #b00020;background:#fff4f4;color:#444;"
+                "max-width:780px;font-size:12px;line-height:1.45;'>"
+                "<b>Caution — tiled DIMAP products:</b> R1C1 is missing. Merging is enabled, so include <code>R1C1</code> together with every additional tile required by the same DIMAP image product (for example <code>R1C1,R1C2</code>).</div>"
+            )
+        elif (not self.merge_tiles.value) and (len(tiles) != 1 or tiles[0] != "R1C1"):
+            selected = ", ".join(html.escape(tile) for tile in tiles)
+            self.tile_merge_caution.value = (
+                "<div style='margin:6px 0 8px 205px;padding:8px 10px;"
+                "border-left:4px solid #b00020;background:#fff4f4;color:#444;"
+                "max-width:780px;font-size:12px;line-height:1.45;'>"
+                f"<b>Caution — tiled DIMAP products:</b> Invalid selection: {selected}. "
+                "If the image extends beyond <code>R1C1</code>, enable <b>Merge selected image tiles</b> and include <code>R1C1</code> with the additional tile IDs. Do not prepare a later tile alone.</div>"
+            )
+        else:
+            self.tile_merge_caution.value = ""
+
+    def _update_existing_project_notice(self, change=None):
+        try:
+            project_name = self.project_name.value.strip()
+            output_base = self.output_base.value.strip()
+            if not project_name or not output_base:
+                self.project_exists_notice.value = ""
+                return
+            project_dir = (Path(output_base).expanduser() / project_name).resolve()
+            loaded = Path(self._loaded_project_dir).resolve() if self._loaded_project_dir else None
+            if loaded is not None and loaded == project_dir:
+                self.project_exists_notice.value = ""
+                return
+            if not project_dir.exists():
+                self.project_exists_notice.value = ""
+                return
+            config = project_dir / "project_settings.json"
+            if config.is_file():
+                message = (
+                    "<b>Project already exists.</b> Use <b>Load / resume existing project</b> above to restore its saved inputs and results, or choose a different project name."
+                )
+            else:
+                message = (
+                    "<b>Output folder already exists.</b> It is not recognized as a saved workflow project. Choose a different project name or review the folder before preparing data."
+                )
+            self.project_exists_notice.value = (
+                "<div style='margin:6px 0 8px 205px;padding:8px 10px;"
+                "border-left:4px solid #d28b00;background:#fffaf0;color:#444;"
+                "max-width:780px;font-size:12px;line-height:1.45;'>"
+                + message + "<br><code>" + html.escape(str(project_dir)) + "</code></div>"
+            )
+        except Exception:
+            self.project_exists_notice.value = ""
+
     def _update_visibility(self, change=None):
         is_tri = self.acquisition_mode.value == "tri_stereo"
         self.common_rows[6].layout.display = "" if is_tri else "none"
         self.crop_box.layout.display = "" if self.crop_enabled.value else "none"
+
+        if is_tri:
+            self.acquisition_A.description = "Input folder 1:"
+            self.acquisition_B.description = "Input folder 2:"
+            self.acquisition_C.description = "Input folder 3:"
+            metadata_message = (
+                "This step reads the full prepared files in <code>merged_tiles</code>. "
+                "For tri-stereo, DIM acquisition times determine the viewing order and normalize "
+                "the prepared files to <b>A = Forward (F)</b>, "
+                "<b>B = Near-nadir / Middle (M)</b>, and <b>C = Backward (B)</b>; "
+                "cropped copies are relabeled consistently."
+            )
+        else:
+            self.acquisition_A.description = "Input A:"
+            self.acquisition_B.description = "Input B:"
+            self.acquisition_C.description = "Input C:"
+            metadata_message = (
+                "This step reads the full prepared files in <code>merged_tiles</code>. "
+                "For stereo, the two prepared images are handled simply as <b>A</b> and <b>B</b>; "
+                "cropped copies are relabeled consistently."
+            )
+
+        self.metadata_geometry_header.value = (
+            "<hr><div style='margin:12px 0 10px 0;padding:12px 14px;"
+            "border-left:6px solid #1976d2;background:#eef5fb;border-radius:3px;'>"
+            "<div style='font-size:20px;font-weight:700;color:#17324d;'>Metadata and geometry</div>"
+            "<div style='color:#5f6b76;font-size:13px;margin-top:5px;line-height:1.5;'>"
+            + metadata_message + "</div></div>"
+        )
 
     def _display_concept_figure(self):
         """
@@ -1026,6 +2248,275 @@ class ProjectSetupUI:
             )
 
 
+    def _clear_downstream_project_state(self):
+        """Hook overridden by FullProjectSetupUI to clear downstream project state."""
+        return None
+
+    def _on_start_clean_project(self, _):
+        """Reset notebook/UI state for a new project without deleting anything."""
+        if getattr(self, "_execution_busy", lambda: False)():
+            self.clean_project_status.value = (
+                "<span style='color:#b00020;font-size:12px;'>Stop the active workflow process before starting a new project.</span>"
+            )
+            return
+
+        try:
+            pointer = self._last_project_pointer_path()
+            if pointer.exists():
+                pointer.unlink()
+
+            self._loaded_project_dir = None
+            self.project_name.value = ""
+            self.output_base.value = str(Path.home())
+            self.platform.value = "PHR1A"
+            self.acquisition_mode.value = "tri_stereo"
+            self.acquisition_A.value = ""
+            self.acquisition_B.value = ""
+            self.acquisition_C.value = ""
+            self.merge_tiles.value = False
+            self.tile_ids.value = "R1C1"
+            self.crop_enabled.value = False
+            self.aoi_vector.value = ""
+            self.rpc_height.value = 2500.0
+            self.buffer_px.value = 500
+            self.spacing_deg.value = 0.00005
+            self.overwrite.value = False
+            self.existing_project_dir.value = ""
+
+            self.last_prepare = None
+            self.last_metadata = None
+            self.stage1_progress.value = 0
+            self.stage1_progress.bar_style = ""
+            self.stage1_progress_text.value = "<span style='color:#666;'>Waiting.</span>"
+            self.stage1_summary.value = ""
+            self.stage1_summary_details.selected_index = None
+            self.stage1_preview.clear_output()
+            self.stage2_summary.value = ""
+            self.stage2_summary_details.selected_index = None
+            self.stage2_tables_box.children = ()
+            self.resume_project_status.value = (
+                "<span style='color:#666;'>New project mode. Define the inputs below, then run Prepare data.</span>"
+            )
+            self.run_stage1.description = "Run prepare data"
+            self.run_stage1.button_style = "info"
+            self.clean_project_status.value = ""
+            self._refresh_runtime_summary()
+            self._clear_downstream_project_state()
+            self._update_tile_validation_message()
+            self._update_existing_project_notice()
+        except Exception as exc:
+            self.clean_project_status.value = (
+                "<div style='margin:6px 0;padding:8px 10px;border-left:4px solid #b00020;"
+                "background:#fff4f4;color:#444;font-size:12px;'>"
+                "<b>New-project reset stopped.</b><br>"
+                + html.escape(type(exc).__name__ + ": " + str(exc))
+                + "</div>"
+            )
+
+    def _last_project_pointer_path(self):
+        return Path.cwd() / ".pleiades_asp_last_project.json"
+
+    def _remember_project(self, settings):
+        """Remember only the project folder; scientific settings stay in the project."""
+        try:
+            pointer = self._last_project_pointer_path()
+            pointer.write_text(
+                json.dumps({"project_dir": str(settings.project_dir)}, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            # Resume convenience must never make a scientific run fail.
+            pass
+
+    def _apply_loaded_project_settings(self, settings):
+        """Populate project/setup widgets from a saved ProjectSettings object."""
+        self.project_name.value = settings.project_name
+        self.output_base.value = settings.output_base
+        self.platform.value = settings.platform
+        self.acquisition_mode.value = settings.acquisition_mode
+        self.acquisition_A.value = settings.acquisition_A
+        self.acquisition_B.value = settings.acquisition_B
+        self.acquisition_C.value = settings.acquisition_C
+        self.merge_tiles.value = bool(settings.merge_tiles)
+        self.tile_ids.value = ",".join(settings.tile_ids)
+        self.crop_enabled.value = bool(settings.crop_enabled)
+        self.aoi_vector.value = settings.aoi_vector
+        self.rpc_height.value = float(settings.rpc_height)
+        self.buffer_px.value = int(settings.buffer_px)
+        self.spacing_deg.value = float(settings.spacing_deg)
+        self.overwrite.value = bool(settings.overwrite)
+        self.existing_project_dir.value = str(settings.project_dir)
+        self._update_visibility()
+
+    def _restore_prepared_image_preview(self, settings):
+        """Restore the saved prepared-image preview for an existing project.
+
+        Loading/resuming a project must not rerun image preparation.  This
+        method only re-displays the preview PNG already saved by Prepare data.
+        If an older project has prepared rasters but no saved preview image, a
+        lightweight preview is recreated directly from those existing rasters;
+        no merge, crop, metadata, or ASP processing is executed.
+        """
+        status = inspect_existing_project(settings)
+        self.stage1_preview.clear_output()
+
+        if not status["prepared_ready"]:
+            return False
+
+        cropped_ready = bool(settings.crop_enabled) and all(
+            (settings.cropped_dir / f"{name}_crop.tif").is_file()
+            for name in settings.image_names
+        )
+        stage = "cropped" if cropped_ready else "prepared"
+        active_images = {
+            name: (
+                settings.cropped_dir / f"{name}_crop.tif"
+                if cropped_ready
+                else settings.merged_dir / f"{name}.tif"
+            )
+            for name in settings.image_names
+        }
+
+        png = settings.figure_dir / f"{stage}_images_preview.png"
+        pdf = settings.figure_dir / f"{stage}_images_preview.pdf"
+        preview_note = "Saved preview restored from the existing project."
+
+        if png.is_file():
+            with self.stage1_preview:
+                self.display_fn(self.ImageClass(filename=str(png)))
+        else:
+            try:
+                preview = make_preview(settings, cropped=cropped_ready)
+                png = preview["png"]
+                pdf = preview["pdf"]
+                with self.stage1_preview:
+                    self.display_fn(preview["figure"])
+                plt.close(preview["figure"])
+                preview_note = (
+                    "Preview recreated from the existing prepared rasters only; "
+                    "Prepare data was not rerun."
+                )
+            except Exception as exc:
+                with self.stage1_preview:
+                    self.display_fn(self.widgets.HTML(
+                        "<div style='padding:9px 11px;border-left:4px solid #d28b00;"
+                        "background:#fffaf0;color:#555;font-size:12px;'>"
+                        "Prepared images were detected, but their preview could not be restored: "
+                        + html.escape(type(exc).__name__ + ": " + str(exc))
+                        + "</div>"
+                    ))
+                return False
+
+        active_lines = "<br>".join(
+            f"<code>{name}: {html.escape(str(path))}</code>"
+            for name, path in active_images.items()
+        )
+        self.stage1_summary_details.selected_index = None
+        self.stage1_summary.value = (
+            "<div style='margin:10px 0;padding:10px;border-left:4px solid #2e7d32;"
+            "background:#f4fbf4;color:#444;'>"
+            "<b>✓ Existing prepared images recovered.</b><br>"
+            + html.escape(preview_note)
+            + "<br><br><b>Active images:</b><br>" + active_lines
+            + "<br><br><b>Preview PNG:</b> <code>" + html.escape(str(png)) + "</code>"
+            + ("<br><b>Preview PDF:</b> <code>" + html.escape(str(pdf)) + "</code>" if pdf.is_file() else "")
+            + "</div>"
+        )
+        return True
+
+    def _refresh_resume_project_status(self, settings=None, *, auto=False):
+        if settings is None:
+            try:
+                settings = self._build_settings()
+            except Exception:
+                return
+
+        status = inspect_existing_project(settings)
+        if status["prepared_ready"]:
+            prepared_text = (
+                "<b>✓ Prepared A/B(/C) data detected.</b> You can continue with "
+                "Metadata and geometry or later stages without rerunning Prepare data."
+            )
+            self.run_stage1.description = "Re-run prepare data"
+            self.run_stage1.button_style = "warning"
+        else:
+            prepared_text = (
+                "Prepared data are incomplete; use Run prepare data before stages that "
+                "need the prepared images."
+            )
+            self.run_stage1.description = "Run prepare data"
+            self.run_stage1.button_style = "info"
+
+        metadata_text = (
+            "<br><b>✓ Metadata/geometry products detected.</b> They can be reused."
+            if status["metadata_ready"]
+            else "<br>Metadata/geometry products were not detected yet."
+        )
+        final_text = (
+            "<br><b>✓ Final DSM product table detected.</b>"
+            if status["final_dsm_ready"]
+            else ""
+        )
+        lead = "Last project restored automatically." if auto else "Existing project loaded."
+        color = "#2e7d32" if status["prepared_ready"] else "#8a5a00"
+        background = "#f4fbf4" if status["prepared_ready"] else "#fffaf0"
+        self.resume_project_status.value = (
+            f"<div style='margin:6px 0 8px 0;padding:9px 11px;border-left:4px solid {color};"
+            f"background:{background};color:#444;font-size:12px;line-height:1.5;'>"
+            f"<b>{html.escape(lead)}</b><br>"
+            f"<code>{html.escape(str(settings.project_dir))}</code><br>"
+            + prepared_text + metadata_text + final_text +
+            "<br><span style='color:#666;'>Nothing is rerun automatically. Existing files "
+            "remain on disk and are used as prerequisites when you choose a later stage.</span>"
+            "</div>"
+        )
+
+    def _load_existing_project_folder(self, project_dir, *, auto=False):
+        settings = load_project_config(project_dir)
+        self._loaded_project_dir = str(settings.project_dir.resolve())
+        self._apply_loaded_project_settings(settings)
+        self._remember_project(settings)
+        self._refresh_runtime_summary(settings)
+        self._refresh_resume_project_status(settings, auto=auto)
+        self._restore_prepared_image_preview(settings)
+
+        # FullProjectSetupUI adds this method after the base interface is built.
+        # On a manual load it is already available; during base-class startup
+        # the derived class restores processing state once its controls exist.
+        restore = getattr(self, "_restore_processing_state_from_project", None)
+        if callable(restore):
+            restore(settings)
+        self._update_existing_project_notice()
+        return settings
+
+    def _on_load_existing_project(self, _):
+        try:
+            project_dir = self.existing_project_dir.value.strip()
+            if not project_dir:
+                raise ValueError("Select an existing project folder first.")
+            self._load_existing_project_folder(project_dir, auto=False)
+        except Exception as exc:
+            self.resume_project_status.value = (
+                "<div style='margin:6px 0 8px 0;padding:9px 11px;border-left:4px solid #b00020;"
+                "background:#fff4f4;color:#444;font-size:12px;line-height:1.5;'>"
+                "<b>✗ Existing project could not be loaded.</b><br>"
+                + html.escape(type(exc).__name__ + ": " + str(exc)) +
+                "</div>"
+            )
+
+    def _try_restore_last_project(self):
+        pointer = self._last_project_pointer_path()
+        if not pointer.is_file():
+            return
+        try:
+            payload = json.loads(pointer.read_text(encoding="utf-8"))
+            project_dir = payload.get("project_dir", "")
+            if project_dir and Path(project_dir).expanduser().is_dir():
+                self._load_existing_project_folder(project_dir, auto=True)
+        except Exception:
+            # A stale last-project pointer should never prevent a fresh project.
+            pass
+
     def _build_settings(self):
         project_name = self.project_name.value.strip()
         output_base = self.output_base.value.strip()
@@ -1038,9 +2529,76 @@ class ProjectSetupUI:
         c = self.acquisition_C.value.strip()
         if not a or not b: raise ValueError("Acquisition A and B folders are required.")
         if self.acquisition_mode.value == "tri_stereo" and not c: raise ValueError("Acquisition C is required for tri-stereo.")
-        tile_ids = tuple(value.strip() for value in self.tile_ids.value.replace(";", ",").split(",") if value.strip())
+        tile_ids = tuple(value.strip().upper() for value in self.tile_ids.value.replace(";", ",").split(",") if value.strip())
         if not tile_ids: raise ValueError("At least one Tile ID is required.")
         return ProjectSettings(project_name=project_name, output_base=output_base, platform=platform, acquisition_mode=self.acquisition_mode.value, acquisition_A=a, acquisition_B=b, acquisition_C=c, merge_tiles=bool(self.merge_tiles.value), tile_ids=tile_ids, crop_enabled=bool(self.crop_enabled.value), aoi_vector=self.aoi_vector.value.strip(), rpc_height=float(self.rpc_height.value), buffer_px=int(self.buffer_px.value), spacing_deg=float(self.spacing_deg.value), overwrite=bool(self.overwrite.value))
+
+    def _runtime_csv_path_from_widgets(self):
+        project = str(self.project_name.value).strip()
+        base = str(self.output_base.value).strip()
+        if not project or not base:
+            return None
+        return Path(base).expanduser() / project / "metadata" / "runtime_summary.csv"
+
+    def _refresh_runtime_summary(self, settings=None):
+        try:
+            csv_path = (
+                settings.metadata_dir / "runtime_summary.csv"
+                if settings is not None
+                else self._runtime_csv_path_from_widgets()
+            )
+            df = _load_runtime_summary(csv_path) if csv_path is not None else _empty_runtime_summary()
+        except Exception:
+            csv_path = None
+            df = _empty_runtime_summary()
+
+        display_df = df[["order", "stage", "last_runtime", "last_completed", "run_count"]].copy()
+        display_df.columns = ["#", "Workflow step", "Last runtime", "Last completed", "Runs"]
+        display_df["Last runtime"] = display_df["Last runtime"].replace("", "—").fillna("—")
+        display_df["Last completed"] = display_df["Last completed"].replace("", "—").fillna("—")
+        self.runtime_summary_table.value = self._dataframe_html(display_df)
+        self.runtime_summary_path.value = (
+            "<div style='margin-top:7px;color:#555;font-size:12px;'>"
+            "<b>Runtime CSV:</b> <code>"
+            + html.escape(str(csv_path if csv_path is not None else "metadata/runtime_summary.csv"))
+            + "</code><br>Each completed stage updates its existing row. Rerunning a stage replaces the previous runtime.</div>"
+        )
+
+    def _runtime_begin(self, stage_key, settings=None):
+        if settings is None:
+            try:
+                settings = self._build_settings()
+            except Exception:
+                settings = None
+        with self._runtime_lock:
+            self._runtime_stage_starts[str(stage_key)] = (time.perf_counter(), settings)
+
+    def _runtime_finish(self, stage_key, settings=None):
+        key = str(stage_key)
+        with self._runtime_lock:
+            started = self._runtime_stage_starts.pop(key, None)
+        if started is None:
+            return None
+        start_time, stored_settings = started
+        elapsed = time.perf_counter() - start_time
+        settings = settings or stored_settings
+        if settings is None:
+            try:
+                settings = self._build_settings()
+            except Exception:
+                return elapsed
+        try:
+            _record_runtime(settings, key, elapsed)
+            self._refresh_runtime_summary(settings)
+        except Exception:
+            # Runtime bookkeeping is diagnostic only and must never make a
+            # successful scientific processing step fail.
+            pass
+        return elapsed
+
+    def _on_runtime_project_change(self, change=None):
+        self._refresh_runtime_summary()
+        self._update_existing_project_notice()
 
     def _set_progress(self, value, message):
         self.stage1_progress.value = int(value)
@@ -1053,10 +2611,15 @@ class ProjectSetupUI:
         self.run_stage1.disabled = True
         try:
             settings = self._build_settings()
+            self._runtime_begin("prepare_data", settings)
             result = run_prepare_data(settings, progress_callback=self._set_progress)
+            self._runtime_finish("prepare_data", settings)
             self.last_prepare = result
+            self._remember_project(settings)
+            self._refresh_resume_project_status(settings)
             active_lines = "<br>".join(f"<code>{name}: {html.escape(str(path))}</code>" for name, path in result['active_images'].items())
             crop_text = "AOI crop created; cropped images are active." if settings.crop_enabled else "AOI crop not requested; full prepared images are active."
+            self.stage1_summary_details.selected_index = None
             self.stage1_summary.value = ("<div style='margin:10px 0;padding:10px;border-left:4px solid #2e7d32;background:#f4fbf4;'>"
                                          "<b>✓ Prepare data completed.</b><br>" + html.escape(crop_text) + "<br><br><b>Active images:</b><br>" + active_lines + "<br><br><b>Preview PNG:</b> <code>" + html.escape(str(result['preview']['png'])) + "</code><br><b>Preview PDF:</b> <code>" + html.escape(str(result['preview']['pdf'])) + "</code><br><b>Detailed log:</b> <code>" + html.escape(str(result['log_path'])) + "</code></div>")
             with self.stage1_preview:
@@ -1070,6 +2633,7 @@ class ProjectSetupUI:
                 log_path = settings.log_dir / 'prepare_data.log'
             except Exception:
                 log_path = Path('(log path unavailable)')
+            self.stage1_summary_details.selected_index = 0
             self.stage1_summary.value = ("<div style='margin:10px 0;padding:10px;border-left:4px solid #b00020;background:#fff4f4;'><b>✗ Prepare data stopped.</b><br>" + html.escape(type(exc).__name__ + ': ' + str(exc)) + "<br><br><b>Detailed log:</b> <code>" + html.escape(str(log_path)) + "</code></div>")
         finally:
             self.run_stage1.disabled = False
@@ -1077,7 +2641,40 @@ class ProjectSetupUI:
     def _dataframe_html(self, df):
         if df is None or len(df) == 0:
             return "<div style='padding:10px;color:#666;'>No rows to display.</div>"
-        return "<div style='max-height:430px;overflow:auto;border:1px solid #ddd;padding:4px;'>" + df.to_html(index=False, border=0) + "</div>"
+
+        table_html = df.to_html(
+            index=False,
+            border=0,
+            classes="asp-analysis-table",
+            na_rep="—",
+        )
+        return (
+            "<style>"
+            ".asp-analysis-table{border-collapse:collapse;width:100%;font-size:12px;}"
+            ".asp-analysis-table th,.asp-analysis-table td{"
+            "border:1px solid #c9cdd2;padding:6px 8px;text-align:left;vertical-align:top;"
+            "white-space:normal;word-break:break-word;}"
+            ".asp-analysis-table th{background:#f3f5f7;font-weight:600;position:sticky;top:0;}"
+            ".asp-analysis-table tr:nth-child(even) td{background:#fafafa;}"
+            "</style>"
+            "<div style='max-height:430px;overflow:auto;border:1px solid #c9cdd2;'>"
+            + table_html
+            + "</div>"
+        )
+
+    def _styled_dataframe(self, df, precision=4):
+        """Pandas Styler used by notebook analysis outputs with clear cell borders."""
+        if df is None:
+            return pd.DataFrame()
+        return (
+            df.style
+            .format(precision=precision, na_rep="—")
+            .set_table_styles([
+                {"selector": "table", "props": [("border-collapse", "collapse"), ("width", "100%")]},
+                {"selector": "th", "props": [("border", "1px solid #c9cdd2"), ("padding", "6px 8px"), ("background", "#f3f5f7"), ("text-align", "left")]},
+                {"selector": "td", "props": [("border", "1px solid #c9cdd2"), ("padding", "6px 8px"), ("vertical-align", "top"), ("white-space", "normal"), ("word-break", "break-word")]},
+            ])
+        )
 
     def _on_stage2(self, _):
         self.stage2_summary.value = ""
@@ -1085,20 +2682,57 @@ class ProjectSetupUI:
         self.run_stage2.disabled = True
         try:
             settings = self._build_settings()
+            self._runtime_begin("metadata_geometry", settings)
             result = run_metadata_geometry(settings=settings, iou_threshold=float(self.iou_threshold.value), custom_pairs_text=self.custom_pairs.value)
+            self._runtime_finish("metadata_geometry", settings)
             self.last_metadata = result
-            tabs = self.widgets.Tab(children=[self.widgets.HTML(self._dataframe_html(result['overlap'])), self.widgets.HTML(self._dataframe_html(result['metadata'])), self.widgets.HTML(self._dataframe_html(result['geometry']))])
-            tabs.set_title(0, 'Overlap pairs')
-            tabs.set_title(1, 'Image metadata')
-            tabs.set_title(2, 'Stereo geometry')
+            self._remember_project(settings)
+            self._refresh_resume_project_status(settings)
+            tab_children = []
+            tab_titles = []
+            if result.get('assignment') is not None and len(result.get('assignment')):
+                tab_children.append(self.widgets.HTML(self._dataframe_html(result['assignment'])))
+                tab_titles.append('View assignment')
+            tab_children.extend([
+                self.widgets.HTML(self._dataframe_html(result['overlap'])),
+                self.widgets.HTML(self._dataframe_html(result['metadata'])),
+                self.widgets.HTML(self._dataframe_html(result['geometry'])),
+            ])
+            tab_titles.extend(['Overlap pairs', 'Image metadata', 'Stereo geometry'])
+            if hasattr(self, 'camera_comparison_panel'):
+                tab_children.append(self.camera_comparison_panel)
+                tab_titles.append('Compared geometry')
+            tabs = self.widgets.Tab(children=tab_children)
+            for idx, title in enumerate(tab_titles):
+                tabs.set_title(idx, title)
             self.stage2_tables_box.children = (tabs,)
-            self.stage2_summary.value = ("<div style='margin:10px 0;padding:10px;border-left:4px solid #2e7d32;background:#f4fbf4;'><b>✓ Metadata and geometry completed.</b><br><b>Prepared images analyzed:</b> <code>" + html.escape(str(result['work_dir'])) + "</code><br><b>Saved tables:</b> <code>" + html.escape(str(settings.metadata_dir)) + "</code><br><b>Detailed log:</b> <code>" + html.escape(str(result['log_path'])) + "</code></div>")
+
+            assignment_text = ''
+            if result.get('assignment') is not None and len(result.get('assignment')):
+                assignment_text = (
+                    '<br><b>Normalized tri-stereo convention:</b> '
+                    '<code>A = Forward (F), B = Middle / near-nadir (M), C = Backward (B)</code>'
+                    '<br><b>Assignment table:</b> <code>'
+                    + html.escape(str(result.get('assignment_csv'))) + '</code>'
+                )
+
+            self.stage2_summary_details.selected_index = None
+            self.stage2_summary.value = (
+                "<div style='margin:10px 0;padding:10px;border-left:4px solid #2e7d32;background:#f4fbf4;'>"
+                "<b>✓ Metadata and geometry completed.</b><br><b>Prepared images analyzed:</b> <code>"
+                + html.escape(str(result['work_dir'])) + "</code>"
+                + assignment_text
+                + "<br><b>Saved tables:</b> <code>" + html.escape(str(settings.metadata_dir))
+                + "</code><br><b>Detailed log:</b> <code>" + html.escape(str(result['log_path']))
+                + "</code></div>"
+            )
         except Exception as exc:
             try:
                 settings = self._build_settings()
                 log_path = settings.log_dir / 'metadata_geometry.log'
             except Exception:
                 log_path = Path('(log path unavailable)')
+            self.stage2_summary_details.selected_index = 0
             self.stage2_summary.value = ("<div style='margin:10px 0;padding:10px;border-left:4px solid #b00020;background:#fff4f4;'><b>✗ Metadata and geometry stopped.</b><br>" + html.escape(type(exc).__name__ + ': ' + str(exc)) + "<br><br><b>Detailed log:</b> <code>" + html.escape(str(log_path)) + "</code></div>")
         finally:
             self.run_stage2.disabled = False
@@ -1137,13 +2771,19 @@ class PreProcessingSettings:
     alignment_dem: str
     mapproject_dem: str
 
+    # Camera/session model propagated through every camera-dependent ASP stage.
+    # RPC is the tested/reproducibility default.
+    camera_model: str = "rpc"
+
     target_epsg: int = 32632
     raw_resolution_m: float = 0.5
     preliminary_pair: str = "AC"
 
     # Exact defaults from the tested preprocessing notebook.
-    ba_robust_threshold: float = 2.0
-    ba_max_iterations: int = 500
+    # ASP bundle_adjust supports: Cauchy, PseudoHuber, Huber, L1, L2.
+    ba_cost_function: Optional[str] = "Cauchy"
+    ba_robust_threshold: Optional[float] = 2.0
+    ba_max_iterations: Optional[int] = 500
 
     prelim_stereo_algorithm: str = "asp_bm"
     prelim_xcorr_threshold: float = 2.0
@@ -1163,6 +2803,33 @@ class PreProcessingSettings:
 
     aligned_ba_threads: int = 18
     mapproject_threads: int = 18
+
+
+def _clean_optional_string(value) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
+def _parse_optional_float(value, field_name: str) -> Optional[float]:
+    text = _clean_optional_string(value)
+    if text is None:
+        return None
+    try:
+        return float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a number or blank.") from exc
+
+
+def _parse_optional_int(value, field_name: str) -> Optional[int]:
+    text = _clean_optional_string(value)
+    if text is None:
+        return None
+    try:
+        return int(float(text))
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be an integer or blank.") from exc
 
 
 @dataclass
@@ -1412,17 +3079,19 @@ def _camera_adjustment_table(
 ):
     rows = []
 
-    for view in settings.image_names:
-        stem = paths["images"][view].stem
-        adjustment = Path(
-            f"{paths['aligned_ba_prefix']}-{stem}.adjust"
-        )
+    resolved = _adjustment_files(
+        paths["aligned_ba_prefix"],
+        paths["images"],
+        settings.image_names,
+        paths.get("cameras"),
+    )
 
+    for view, adjustment in zip(settings.image_names, resolved):
         rows.append(
             {
                 "Image": view,
-                "Status": "Created" if adjustment.is_file() else "Missing",
-                "Aligned adjustment": str(adjustment),
+                "Status": "Created" if Path(adjustment).is_file() else "Missing",
+                "Aligned adjustment / state": str(adjustment),
             }
         )
 
@@ -1465,6 +3134,87 @@ GEOMETRY_LABELS = {
 }
 
 
+CAMERA_MODEL_CHOICES = {
+    "rpc": {
+        "label": "RPC — RPC XML (default)",
+        "session": "rpc",
+        "file_pattern": "RPC_A.XML / RPC_B.XML / RPC_C.XML",
+    },
+    "pleiades": {
+        "label": "Pléiades exact linescan — DIM XML",
+        "session": "pleiades",
+        "file_pattern": "DIM_A.XML / DIM_B.XML / DIM_C.XML",
+    },
+}
+
+
+def _normalize_camera_model(value: str) -> str:
+    model = str(value or "rpc").strip().lower()
+    if model not in CAMERA_MODEL_CHOICES:
+        raise ValueError(
+            f"Unsupported camera model: {value!r}. "
+            "Choose RPC or Pléiades exact linescan (DIM XML)."
+        )
+    return model
+
+
+def _camera_model_label(value: str) -> str:
+    return CAMERA_MODEL_CHOICES[_normalize_camera_model(value)]["label"]
+
+
+def _camera_model_session(settings: ProjectSettings, processing: PreProcessingSettings) -> str:
+    model = _normalize_camera_model(processing.camera_model)
+    if model == "rpc":
+        return "rpc"
+    platform = str(settings.platform or "").strip().upper()
+    if not (platform.startswith("PHR") or platform.startswith("PNEO")):
+        raise ValueError(
+            "Pléiades exact linescan mode (-t pleiades) is intended for "
+            "Pléiades 1A/1B and Pléiades Neo DIM XML cameras. With the "
+            "reproducibility default ASP 3.3.0, keep SPOT 6/7 on the RPC "
+            "camera model."
+        )
+    return "pleiades"
+
+
+def _camera_model_suffix(processing: PreProcessingSettings) -> str:
+    """Preserve all legacy RPC output names; namespace exact-camera outputs."""
+    return "" if _normalize_camera_model(processing.camera_model) == "rpc" else "_pleiades"
+
+
+def _active_dim_inputs(settings: ProjectSettings):
+    if settings.crop_enabled:
+        dims = {
+            view: settings.cropped_dir / f"DIM_{view}_crop.XML"
+            for view in settings.image_names
+        }
+    else:
+        dims = {
+            view: settings.merged_dir / f"DIM_{view}.XML"
+            for view in settings.image_names
+        }
+    _require_existing_files(*dims.values())
+    return dims
+
+
+def _select_processing_cameras(settings, processing, rpcs):
+    model = _normalize_camera_model(processing.camera_model)
+    session = _camera_model_session(settings, processing)
+    if model == "rpc":
+        cameras = rpcs
+    else:
+        if settings.crop_enabled:
+            raise ValueError(
+                "Pléiades exact linescan (DIM XML) mode requires full prepared "
+                "images in this workflow. Disable AOI image cropping and run "
+                "Prepare data again. The AOI crop routine updates RPC offsets "
+                "but does not rewrite the exact DIM linescan camera model."
+            )
+        cameras = _active_dim_inputs(settings)
+    _require_existing_files(*cameras.values())
+    return cameras, session, model
+
+
 # ============================================================
 # PROCESSING PATHS
 # ============================================================
@@ -1491,11 +3241,13 @@ def _active_image_inputs(settings: ProjectSettings):
 
     Crop OFF:
         merged_tiles/A.tif, B.tif, C.tif
-        merged_tiles/A.XML, B.XML, C.XML
+        merged_tiles/RPC_A.XML, RPC_B.XML, RPC_C.XML
+        (legacy A.XML/B.XML/C.XML are still accepted)
 
     Crop ON:
         merged_tiles/cropped_images/A_crop.tif, ...
-        merged_tiles/cropped_images/A_crop.XML, ...
+        merged_tiles/cropped_images/RPC_A_crop.XML, ...
+        (legacy A_crop.XML/... are still accepted)
     """
     if settings.crop_enabled:
         images = {
@@ -1503,7 +3255,7 @@ def _active_image_inputs(settings: ProjectSettings):
             for view in settings.image_names
         }
         rpcs = {
-            view: settings.cropped_dir / f"{view}_crop.XML"
+            view: _prepared_rpc_path(settings.cropped_dir, f"{view}_crop")
             for view in settings.image_names
         }
     else:
@@ -1512,7 +3264,7 @@ def _active_image_inputs(settings: ProjectSettings):
             for view in settings.image_names
         }
         rpcs = {
-            view: settings.merged_dir / f"{view}.XML"
+            view: _prepared_rpc_path(settings.merged_dir, view)
             for view in settings.image_names
         }
 
@@ -1544,6 +3296,10 @@ def _preprocessing_paths(
     processing: PreProcessingSettings,
 ):
     images, rpcs = _active_image_inputs(settings)
+    cameras, session_type, camera_model = _select_processing_cameras(
+        settings, processing, rpcs
+    )
+    model_suffix = _camera_model_suffix(processing)
 
     processing_root = _processing_root(settings)
     log_dir = _processing_log_dir(settings)
@@ -1567,14 +3323,14 @@ def _preprocessing_paths(
 
     ba_prefix = (
         asp_out
-        / f"ba_{view_tag}"
+        / f"ba{model_suffix}_{view_tag}"
         / view_tag
     )
 
     prelim_stereo_dir = (
         asp_out
         / "dems"
-        / f"stereo_preliminary_{pair}"
+        / f"stereo_preliminary_{pair}{model_suffix}"
     )
 
     prelim_prefix = prelim_stereo_dir / "preliminary"
@@ -1583,7 +3339,7 @@ def _preprocessing_paths(
     prelim_dem_prefix = (
         asp_out
         / "dems"
-        / f"preliminary_{pair}"
+        / f"preliminary_{pair}{model_suffix}"
     )
     prelim_dem = Path(f"{prelim_dem_prefix}-DEM.tif")
 
@@ -1591,13 +3347,13 @@ def _preprocessing_paths(
         asp_out
         / "dems"
         / "align"
-        / f"preliminary_{pair}_to_LiDAR"
+        / f"preliminary_{pair}_to_LiDAR{model_suffix}"
     )
     align_transform = Path(f"{align_prefix}-transform.txt")
 
     aligned_ba_prefix = (
         asp_out
-        / f"ba_aligned_{view_tag}"
+        / f"ba_aligned{model_suffix}_{view_tag}"
         / view_tag
     )
 
@@ -1613,7 +3369,7 @@ def _preprocessing_paths(
             / (
                 f"{view}_{settings.project_name}_"
                 f"{processing.raw_resolution_m:g}m_"
-                f"ba{map_label}.tif"
+                f"ba{map_label}{model_suffix}.tif"
             )
         )
         for view in settings.image_names
@@ -1625,26 +3381,30 @@ def _preprocessing_paths(
         "asp_out": asp_out,
         "images": images,
         "rpcs": rpcs,
+        "cameras": cameras,
+        "camera_model": camera_model,
+        "session_type": session_type,
+        "model_suffix": model_suffix,
         "view_tag": view_tag,
         "pair": pair,
         "ba_prefix": ba_prefix,
-        "ba_log": log_dir / f"bundle_adjust.{view_tag}.log",
+        "ba_log": log_dir / f"bundle_adjust.{view_tag}{model_suffix}.log",
         "prelim_stereo_dir": prelim_stereo_dir,
         "prelim_prefix": prelim_prefix,
         "prelim_point_cloud": prelim_point_cloud,
-        "prelim_log": log_dir / f"stereo_preliminary.{pair}.log",
+        "prelim_log": log_dir / f"stereo_preliminary.{pair}{model_suffix}.log",
         "prelim_dem_prefix": prelim_dem_prefix,
         "prelim_dem": prelim_dem,
-        "prelim_dem_log": log_dir / f"point2dem.preliminary_{pair}.log",
+        "prelim_dem_log": log_dir / f"point2dem.preliminary_{pair}{model_suffix}.log",
         "align_prefix": align_prefix,
         "align_transform": align_transform,
-        "align_log": log_dir / f"pc_align.preliminary_{pair}_to_LiDAR.log",
+        "align_log": log_dir / f"pc_align.preliminary_{pair}_to_LiDAR{model_suffix}.log",
         "aligned_ba_prefix": aligned_ba_prefix,
-        "aligned_ba_log": log_dir / f"bundle_adjust.aligned_{view_tag}.log",
+        "aligned_ba_log": log_dir / f"bundle_adjust.aligned_{view_tag}{model_suffix}.log",
         "mapproject_dir": mapproject_dir,
         "mapprojected": mapprojected,
         "mapproject_logs": {
-            view: log_dir / f"mapproject.{view}.log"
+            view: log_dir / f"mapproject.{view}{model_suffix}.log"
             for view in settings.image_names
         },
     }
@@ -1778,6 +3538,79 @@ def _prepare_run_directory(
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _execute_managed_process(
+    cmd,
+    *,
+    cwd=None,
+    env=None,
+    stdout=None,
+    stderr=None,
+    text=True,
+    command_label="",
+):
+    """Run one external command under the current notebook execution controller."""
+    controller = _current_process_controller()
+    if controller is not None:
+        controller.check_cancelled()
+        controller.wait_if_paused()
+
+    process = subprocess.Popen(
+        [str(value) for value in cmd],
+        cwd=None if cwd is None else str(cwd),
+        env=env,
+        stdout=stdout,
+        stderr=stderr,
+        text=text,
+        **_popen_kwargs_for_managed_process(),
+    )
+
+    if controller is not None:
+        controller.attach_process(process, command_label=command_label or str(cmd[0]))
+
+    try:
+        returncode = process.wait()
+    finally:
+        if controller is not None:
+            controller.detach_process(process)
+
+    if controller is not None and controller.cancelled:
+        raise WorkflowCancelled(
+            f"Run stopped by user while executing {command_label or cmd[0]}."
+        )
+
+    return returncode
+
+
+def _looks_like_workflow_cli_wrapper(executable: str | Path) -> bool:
+    """Return True when PATH resolves to this package's Python console wrapper.
+
+    Managed execution controls should attach to the real ASP executable when
+    possible, rather than to a short-lived Python launcher that then starts ASP.
+    """
+    path = Path(executable)
+    try:
+        if path.suffix.lower() == ".exe":
+            return False
+        text = path.read_text(encoding="utf-8", errors="ignore")[:8192]
+        return "pleiades_asp_runner.cli" in text
+    except Exception:
+        return False
+
+
+def _managed_asp_executable(command: str):
+    """Return a directly executable managed ASP binary when already installed."""
+    try:
+        from pleiades_asp_runner.installer import asp_bin_location, is_windows
+        if is_windows():
+            return None
+        candidate = Path(asp_bin_location()) / command
+        if candidate.is_file():
+            return candidate
+    except Exception:
+        return None
+    return None
+
+
 def _run_asp_command(
     command: str,
     arguments: Sequence,
@@ -1787,10 +3620,13 @@ def _run_asp_command(
     """
     Execute ASP from Python and write the long console output to a log.
 
-    The five installed workflow wrappers are used when available.
-    For ASP tools such as pc_merge that are not currently exposed as a
-    wrapper, the function falls back to the ASP installation managed by
-    pleiades_asp_runner.
+    Long-running commands are launched with ``Popen`` inside a managed process
+    group. When the notebook UI is running them in its background worker this
+    enables real Pause / Resume / Stop controls, including child ASP processes.
+
+    The installed workflow wrappers are used when available. For ASP tools
+    that are not exposed as wrappers, the function falls back to the ASP
+    installation managed by ``pleiades_asp_runner``.
     """
     log_file = Path(log_file)
     cwd = Path(cwd)
@@ -1799,6 +3635,11 @@ def _run_asp_command(
     cwd.mkdir(parents=True, exist_ok=True)
 
     arguments = list(arguments)
+    controller = _current_process_controller()
+
+    if controller is not None:
+        controller.check_cancelled()
+        controller.wait_if_paused()
 
     with log_file.open("w", encoding="utf-8") as stream:
         stream.write(f"Command: {command}\n")
@@ -1809,18 +3650,21 @@ def _run_asp_command(
         stream.flush()
 
         executable = shutil.which(command)
+        env = None
+
+        # When PATH points to the package console-script wrapper, bypass it and
+        # attach the controller directly to the real ASP executable. This makes
+        # Pause/Resume/Stop act on ASP itself and avoids launcher-only PIDs.
+        managed_direct = _managed_asp_executable(command)
+        if executable is not None and _looks_like_workflow_cli_wrapper(executable) and managed_direct is not None:
+            executable = str(managed_direct)
 
         if executable is not None:
-            result = subprocess.run(
-                [
-                    executable,
-                    *[str(value) for value in arguments],
-                ],
-                cwd=str(cwd),
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
+            cmd = [
+                executable,
+                *[str(value) for value in arguments],
+            ]
+            process_cwd = cwd
 
         else:
             try:
@@ -1846,19 +3690,15 @@ def _run_asp_command(
                 runtime_cwd = host_to_runtime_path(cwd)
 
                 runtime_args = []
-
                 for value in arguments:
                     if isinstance(value, Path):
-                        runtime_args.append(
-                            host_to_runtime_path(value)
-                        )
+                        runtime_args.append(host_to_runtime_path(value))
                     else:
                         runtime_args.append(str(value))
 
                 env_args = [
                     f"{key}={value}"
-                    for key, value in
-                    wsl_execution_environment().items()
+                    for key, value in wsl_execution_environment().items()
                 ]
 
                 cmd = [
@@ -1871,23 +3711,14 @@ def _run_asp_command(
                     f"{asp_bin}/{command}",
                     *runtime_args,
                 ]
-
-                result = subprocess.run(
-                    cmd,
-                    stdout=stream,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
+                process_cwd = None
 
             else:
-                managed_executable = (
-                    Path(asp_bin) / command
-                )
+                managed_executable = Path(asp_bin) / command
 
                 if not managed_executable.is_file():
                     raise FileNotFoundError(
-                        f"ASP executable not found:\n"
-                        f"{managed_executable}"
+                        f"ASP executable not found:\n{managed_executable}"
                     )
 
                 env = os.environ.copy()
@@ -1897,24 +3728,242 @@ def _run_asp_command(
                     + env.get("PATH", "")
                 )
 
-                result = subprocess.run(
-                    [
-                        str(managed_executable),
-                        *[str(value) for value in arguments],
-                    ],
-                    cwd=str(cwd),
-                    env=env,
-                    stdout=stream,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
+                cmd = [
+                    str(managed_executable),
+                    *[str(value) for value in arguments],
+                ]
+                process_cwd = cwd
 
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"{command} stopped with exit code "
-                f"{result.returncode}.\n"
-                f"See the detailed log:\n{log_file}"
+        stream.write("Resolved command:\n  " + " ".join(str(v) for v in cmd) + "\n")
+        stream.flush()
+
+        try:
+            returncode = _execute_managed_process(
+                cmd,
+                cwd=process_cwd,
+                env=env,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                text=True,
+                command_label=command,
             )
+        except WorkflowCancelled:
+            stream.write("\n[workflow] Run stopped by user.\n")
+            stream.flush()
+            raise WorkflowCancelled(
+                f"Run stopped by user while executing {command}. "
+                f"Partial outputs, if any, were left on disk. Detailed log: {log_file}"
+            )
+
+        if returncode != 0:
+            try:
+                lines = log_file.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+                tail = "\n".join(lines[-35:])
+            except Exception:
+                tail = ""
+            message = (
+                f"{command} stopped with exit code {returncode}.\n"
+                f"Detailed log: {log_file}"
+            )
+            if tail:
+                message += "\n\nLast ASP log lines:\n" + tail
+            raise RuntimeError(message)
+
+        if controller is not None:
+            controller.check_cancelled()
+
+
+def _extract_cam_test_triplet(pattern: str, text: str):
+    """Return cam_test Min/Median/Max triplet, or NaNs when unavailable."""
+    match = re.search(pattern, text, flags=re.MULTILINE | re.IGNORECASE)
+    if not match:
+        return (np.nan, np.nan, np.nan)
+    return tuple(float(match.group(i)) for i in range(1, 4))
+
+
+def _parse_cam_test_metrics(log_path: Path) -> dict:
+    """Parse the numerical camera-comparison diagnostics printed by ASP cam_test."""
+    path = Path(log_path)
+    output = path.read_text(encoding="utf-8", errors="replace")
+
+    number = r"([0-9eE+\-.]+)"
+
+    direction = _extract_cam_test_triplet(
+        rf"cam1\s+to\s+cam2\s+camera\s+direction\s+diff\s+norm\s+"
+        rf"Min:\s*{number}\s+Median:\s*{number}\s+Max:\s*{number}",
+        output,
+    )
+    dim_to_rpc = _extract_cam_test_triplet(
+        rf"cam1\s+to\s+cam2\s+pixel\s+diff\s+"
+        rf"Min:\s*{number}\s+Median:\s*{number}\s+Max:\s*{number}",
+        output,
+    )
+    rpc_to_dim = _extract_cam_test_triplet(
+        rf"cam2\s+to\s+cam1\s+pixel\s+diff\s+"
+        rf"Min:\s*{number}\s+Median:\s*{number}\s+Max:\s*{number}",
+        output,
+    )
+
+    sample_match = re.search(
+        r"Number\s+of\s+samples\s+used:\s*(\d+)",
+        output,
+        flags=re.IGNORECASE,
+    )
+    elapsed_match = re.search(
+        rf"Elapsed\s+time\s+per\s+sample:\s*{number}\s+milliseconds",
+        output,
+        flags=re.IGNORECASE,
+    )
+
+    return {
+        "Samples": int(sample_match.group(1)) if sample_match else np.nan,
+        "Direction_Min": direction[0],
+        "Direction_Median": direction[1],
+        "Direction_Max": direction[2],
+        "DIM_to_RPC_Min_px": dim_to_rpc[0],
+        "DIM_to_RPC_Median_px": dim_to_rpc[1],
+        "DIM_to_RPC_Max_px": dim_to_rpc[2],
+        "RPC_to_DIM_Min_px": rpc_to_dim[0],
+        "RPC_to_DIM_Median_px": rpc_to_dim[1],
+        "RPC_to_DIM_Max_px": rpc_to_dim[2],
+        "Elapsed_ms_per_sample": (
+            float(elapsed_match.group(1)) if elapsed_match else np.nan
+        ),
+    }
+
+
+def _plot_camera_model_comparison(settings: ProjectSettings, table: pd.DataFrame):
+    """Plot DIM→RPC minimum, median, and maximum pixel discrepancy for the active views."""
+    numeric = table.copy()
+    numeric = numeric[pd.to_numeric(numeric["DIM_to_RPC_Median_px"], errors="coerce").notna()]
+    if numeric.empty:
+        return None
+
+    labels = [
+        f"{str(row.Dataset).replace('_', ' ')} - {row.View}"
+        for row in numeric.itertuples(index=False)
+    ]
+    x = np.arange(len(numeric))
+    minv = pd.to_numeric(numeric["DIM_to_RPC_Min_px"], errors="coerce").to_numpy(float)
+    med = pd.to_numeric(numeric["DIM_to_RPC_Median_px"], errors="coerce").to_numpy(float)
+    maxv = pd.to_numeric(numeric["DIM_to_RPC_Max_px"], errors="coerce").to_numpy(float)
+
+    fig, ax = plt.subplots(figsize=(13, 6))
+    ax.plot(x, minv, marker="^", linewidth=1.2, linestyle=":", label="Minimum")
+    ax.plot(x, med, marker="o", linewidth=1.5, label="Median")
+    ax.plot(x, maxv, marker="s", linewidth=1.2, linestyle="--", label="Maximum")
+
+    from matplotlib.ticker import ScalarFormatter, MaxNLocator
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
+    ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=False))
+    ax.ticklabel_format(axis="y", style="plain", useOffset=False)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=60, ha="right")
+    ax.set_ylabel("DIM–RPC pixel difference (pixels)")
+    ax.set_xlabel("Acquisition and view")
+    ax.set_title("Comparison of exact line-scan and RPC camera models")
+    ax.grid(True, axis="y", alpha=0.25)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+
+    png = settings.figure_dir / f"{settings.project_name}_DIM_RPC_camera_comparison.png"
+    pdf = settings.figure_dir / f"{settings.project_name}_DIM_RPC_camera_comparison.pdf"
+    fig.savefig(png, dpi=300, bbox_inches="tight")
+    fig.savefig(pdf, format="pdf", bbox_inches="tight")
+    return {"figure": fig, "png": png, "pdf": pdf}
+
+
+def run_camera_model_comparison(settings: ProjectSettings):
+    """
+    Compare each prepared exact DIM camera against its RPC model using the
+    same cam_test principle as the external multi-acquisition analysis code.
+
+    No --height-above-datum or --sample-rate override is added here.  ASP is
+    allowed to use its own cam_test defaults, exactly as in the reference
+    command supplied by the workflow author.
+    """
+    create_project_folders(settings)
+
+    if settings.acquisition_mode == "tri_stereo" and not _tri_stereo_normalization_ready(settings):
+        raise ValueError(
+            "Run Metadata and geometry first so tri-stereo A/B/C are normalized "
+            "to Forward/Middle/Backward before comparing DIM and RPC geometry."
+        )
+
+    platform = str(settings.platform or "").strip().upper()
+    if platform.startswith("PHR") or platform.startswith("PNEO"):
+        exact_session = "pleiades"
+    elif platform.startswith("SPOT"):
+        exact_session = "spot"
+    else:
+        raise ValueError(
+            "DIM vs RPC geometry comparison is available for Pléiades, "
+            "Pléiades Neo, and supported SPOT 6/7 exact-camera datasets."
+        )
+
+    rows = []
+    logs = {}
+
+    for view in settings.image_names:
+        image = settings.merged_dir / f"{view}.tif"
+        exact_camera = settings.merged_dir / f"DIM_{view}.XML"
+        rpc_camera = _prepared_rpc_path(settings.merged_dir, view)
+        _require_existing_files(image, exact_camera, rpc_camera)
+
+        log_path = settings.asp_logs_dir / f"cam_test.{view}.rpc_vs_dim.log"
+        logs[view] = log_path
+
+        # Intentionally mirrors the supplied external comparison script:
+        # cam_test --image <view>.tif --cam1 DIM_<view>.XML --cam2 RPC_<view>.XML
+        #          --session1 <exact session> --session2 rpc
+        _run_asp_command(
+            "cam_test",
+            [
+                "--image", image,
+                "--cam1", exact_camera,
+                "--cam2", rpc_camera,
+                "--session1", exact_session,
+                "--session2", "rpc",
+            ],
+            log_path,
+            settings.project_dir,
+        )
+
+        metrics = _parse_cam_test_metrics(log_path)
+        rows.append(
+            {
+                "Dataset": settings.project_name,
+                "Sensor": settings.platform,
+                "View": view,
+                "Status": "OK",
+                **metrics,
+            }
+        )
+
+    # Keep the same column order as the external comparison code.
+    ordered_columns = [
+        "Dataset", "Sensor", "View", "Status", "Samples",
+        "Direction_Min", "Direction_Median", "Direction_Max",
+        "DIM_to_RPC_Min_px", "DIM_to_RPC_Median_px", "DIM_to_RPC_Max_px",
+        "RPC_to_DIM_Min_px", "RPC_to_DIM_Median_px", "RPC_to_DIM_Max_px",
+        "Elapsed_ms_per_sample",
+    ]
+    table = pd.DataFrame(rows).reindex(columns=ordered_columns)
+    csv_path = settings.metadata_dir / f"{settings.project_name}_cam_test_DIM_vs_RPC.csv"
+    table.to_csv(csv_path, index=False)
+    plot = _plot_camera_model_comparison(settings, table)
+
+    return {
+        "table": table,
+        "csv": csv_path,
+        "logs": logs,
+        "log_dir": settings.asp_logs_dir,
+        "plot": plot,
+        "exact_session": exact_session,
+    }
 
 
 # ============================================================
@@ -1971,7 +4020,7 @@ def _parse_residual_statistics(filepath, active_views):
             camera_name = Path(parts[0]).name
 
             match = re.fullmatch(
-                r"([ABC])(?:_crop)?\.(?:XML|xml|tif|tiff)",
+                r"(?:(?:DIM|RPC)_)?([ABC])(?:_crop)?\.(?:XML|xml|tif|tiff)",
                 camera_name,
             )
 
@@ -2144,7 +4193,7 @@ def _plot_reference_dem_from_path(
     png = settings.figure_dir / f"{filename_stem}.png"
     pdf = settings.figure_dir / f"{filename_stem}.pdf"
     fig.savefig(png, dpi=200, bbox_inches="tight")
-    fig.savefig(pdf, dpi=300, bbox_inches="tight")
+    fig.savefig(pdf, format="pdf", bbox_inches="tight")
 
     with rasterio.open(dem_path) as src:
         summary = {
@@ -2641,11 +4690,7 @@ def _plot_mapprojected_from_paths(
         common_x_label = "Easting (m)"
         common_y_label = "Northing (m)"
 
-    view_labels = {
-        "A": "A — Forward",
-        "B": "B — Near-nadir",
-        "C": "C — Backward",
-    }
+    view_labels = _workflow_view_display_labels(settings)
 
     for ax, (view, item) in zip(
         axes,
@@ -2665,7 +4710,6 @@ def _plot_mapprojected_from_paths(
             origin="upper",
             cmap=cmap,
             interpolation="nearest",
-            rasterized=True,
         )
 
         ax.set_xlim(
@@ -2764,44 +4808,699 @@ def _plot_mapprojected_from_paths(
 # Exact command sequence from notebook 05.
 # ============================================================
 
+def _preflight_exact_pleiades_cameras(settings, paths):
+    """Verify that each full image can be loaded with its DIM exact camera.
+
+    This intentionally uses cam_test against the corresponding RPC camera.
+    It catches orthorectified/non-camera DIM products, mismatched DIM/image
+    pairs, and unsupported exact-camera files before bundle_adjust starts.
+    """
+    if paths.get("camera_model") != "pleiades":
+        return {}
+
+    if settings.crop_enabled:
+        raise ValueError(
+            "Exact DIM mode requires the full prepared images; disable AOI raw-image cropping."
+        )
+
+    logs = {}
+    for view in settings.image_names:
+        image = paths["images"][view]
+        exact = paths["cameras"][view]
+        rpc = paths["rpcs"][view]
+        log = paths["log_dir"] / f"cam_test.preflight_{view}_DIM_vs_RPC.log"
+        _run_asp_command(
+            "cam_test",
+            [
+                "--image", image,
+                "--cam1", exact,
+                "--cam2", rpc,
+                "--session1", "pleiades",
+                "--session2", "rpc",
+            ],
+            log,
+            paths["processing_root"],
+        )
+        logs[view] = log
+    return logs
+
+
+PREPROCESS_STAGE_ORDER = (
+    "bundle_adjustment",
+    "preliminary_stereo",
+    "preliminary_dem",
+    "lidar_alignment",
+    "camera_transform",
+    "map_projection",
+)
+
+
+def _normalized_preprocess_stages(stages=None):
+    """Return validated preprocessing stages, preserving workflow order."""
+    if stages is None:
+        return PREPROCESS_STAGE_ORDER
+
+    if isinstance(stages, str):
+        requested = {stages}
+    else:
+        requested = {str(stage) for stage in stages}
+
+    unknown = requested.difference(PREPROCESS_STAGE_ORDER)
+    if unknown:
+        raise ValueError(
+            "Unknown preprocessing stage(s): "
+            + ", ".join(sorted(unknown))
+        )
+
+    if not requested:
+        raise ValueError("Select at least one preprocessing stage.")
+
+    return tuple(
+        stage for stage in PREPROCESS_STAGE_ORDER if stage in requested
+    )
+
+
+def _adjustment_candidates(
+    prefix: Path,
+    images: dict,
+    views: Sequence[str],
+    cameras: Optional[dict] = None,
+):
+    """Return possible ASP adjustment/model-state outputs for each view.
+
+    RPC workflows normally use image-based names (run-A.adjust). Exact
+    Pléiades cameras are CSM-backed; depending on ASP version/output mode,
+    camera-stem names and adjusted model-state JSON files may also be written.
+    """
+    candidates = {}
+    for view in views:
+        image_stem = Path(images[view]).stem
+        camera_stem = (
+            Path(cameras[view]).stem
+            if cameras is not None and view in cameras
+            else None
+        )
+        # ASP names adjustment products from the camera basename for exact
+        # Pléiades DIM/CSM cameras (e.g. ABC-DIM_A.adjust).  RPC commonly
+        # resolves to the image basename.  Prefer the actual camera stem when
+        # it differs, but retain the image-stem fallback for ASP-version
+        # compatibility.
+        stems = []
+        if camera_stem and camera_stem != image_stem:
+            stems.append(camera_stem)
+        stems.append(image_stem)
+        if camera_stem and camera_stem not in stems:
+            stems.append(camera_stem)
+
+        paths = []
+        for stem in stems:
+            paths.extend([
+                Path(f"{prefix}-{stem}.adjust"),
+                Path(f"{prefix}-{stem}.adjusted_state.json"),
+            ])
+        candidates[view] = tuple(paths)
+    return candidates
+
+
+def _adjustment_files(
+    prefix: Path,
+    images: dict,
+    views: Sequence[str],
+    cameras: Optional[dict] = None,
+):
+    """Resolve one existing adjustment/state product per view when possible."""
+    resolved = []
+    for view, options in _adjustment_candidates(prefix, images, views, cameras).items():
+        found = next((path for path in options if path.is_file()), None)
+        resolved.append(found if found is not None else options[0])
+    return tuple(resolved)
+
+
+def _require_adjustments(
+    prefix: Path,
+    images: dict,
+    views: Sequence[str],
+    cameras: Optional[dict] = None,
+):
+    candidates = _adjustment_candidates(prefix, images, views, cameras)
+    resolved = []
+    missing = []
+    for view, options in candidates.items():
+        found = next((path for path in options if path.is_file()), None)
+        if found is None:
+            missing.append((view, options))
+        else:
+            resolved.append(found)
+
+    if missing:
+        parent = Path(prefix).parent
+        produced = sorted(parent.glob(Path(prefix).name + "*")) if parent.is_dir() else []
+        expected = []
+        for view, options in missing:
+            expected.append(
+                f"  {view}: " + " OR ".join(str(path) for path in options)
+            )
+        produced_text = "\n".join(f"  {path.name}" for path in produced) or "  (none)"
+        raise FileNotFoundError(
+            "Bundle adjustment finished but no recognized adjustment/model-state "
+            "product was found for one or more views.\nExpected one of:\n"
+            + "\n".join(expected)
+            + "\n\nFiles actually produced for this prefix:\n"
+            + produced_text
+        )
+    return tuple(resolved)
+
+
+
+def _load_saved_preprocessing_state(settings: ProjectSettings) -> dict:
+    """Return the last saved preprocessing state for a project, if available."""
+    path = settings.project_dir / "processing_state.json"
+    if not path.is_file():
+        return {}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    pre = state.get("pre_processing", {}) if isinstance(state, dict) else {}
+    return pre if isinstance(pre, dict) else {}
+
+
+def _adjustments_ready(prefix, images, views, cameras=None) -> bool:
+    """True when one recognized ASP adjustment/model-state exists per view."""
+    try:
+        candidates = _adjustment_candidates(Path(prefix), images, views, cameras)
+        return all(any(path.is_file() for path in options) for options in candidates.values())
+    except Exception:
+        return False
+
+
+def _stage_prerequisites_ready(stage, settings, processing, paths) -> bool:
+    """Check only the upstream products required by one preprocessing stage."""
+    images = paths["images"]
+    cameras = paths["cameras"]
+    views = settings.image_names
+
+    if stage == "bundle_adjustment":
+        return True
+    if stage == "preliminary_stereo":
+        return _adjustments_ready(paths["ba_prefix"], images, views, cameras)
+    if stage == "preliminary_dem":
+        return Path(paths["prelim_point_cloud"]).is_file()
+    if stage == "lidar_alignment":
+        return (
+            Path(paths["prelim_dem"]).is_file()
+            and bool(str(processing.alignment_dem).strip())
+            and Path(processing.alignment_dem).expanduser().is_file()
+        )
+    if stage == "camera_transform":
+        return (
+            Path(paths["align_transform"]).is_file()
+            and _adjustments_ready(paths["ba_prefix"], images, views, cameras)
+        )
+    if stage == "map_projection":
+        return (
+            bool(str(processing.mapproject_dem).strip())
+            and Path(processing.mapproject_dem).expanduser().is_file()
+            and _adjustments_ready(paths["aligned_ba_prefix"], images, views, cameras)
+        )
+    return False
+
+
+def _processing_variant_from_saved_state(settings, processing):
+    """Build a compatible processing configuration from saved project state.
+
+    This is used only as a fallback for *single-stage* resume.  Current UI
+    choices are tried first.  If their prerequisite path does not exist, the
+    saved camera model / preliminary pair / CRS / reference paths are reused so
+    a completed upstream stage can be consumed directly after reopening the
+    notebook.
+    """
+    pre = _load_saved_preprocessing_state(settings)
+    if not pre:
+        return None
+
+    values = asdict(processing)
+    for key in ("camera_model", "target_epsg", "raw_resolution_m", "preliminary_pair"):
+        value = pre.get(key)
+        if value not in (None, ""):
+            values[key] = value
+
+    if not str(values.get("alignment_dem", "")).strip():
+        saved = str(pre.get("alignment_dem") or "").strip()
+        if saved:
+            values["alignment_dem"] = saved
+    if not str(values.get("mapproject_dem", "")).strip():
+        saved = str(pre.get("mapproject_dem") or "").strip()
+        if saved:
+            values["mapproject_dem"] = saved
+
+    try:
+        values["target_epsg"] = int(values["target_epsg"])
+        values["raw_resolution_m"] = float(values["raw_resolution_m"])
+        values["preliminary_pair"] = str(values["preliminary_pair"])
+        return PreProcessingSettings(**values)
+    except Exception:
+        return None
+
+
+def _unique_existing_candidate(candidates):
+    existing = []
+    seen = set()
+    for candidate in candidates:
+        path = Path(candidate)
+        if path.is_file():
+            key = str(path.resolve())
+            if key not in seen:
+                seen.add(key)
+                existing.append(path)
+    return existing[0] if len(existing) == 1 else None
+
+
+def _discover_stage_prerequisites_from_disk(stage, settings, processing, paths):
+    """Last-resort discovery for older projects without processing_state.json.
+
+    Only a *unique* matching product is accepted.  If several candidates are
+    present the function leaves the expected path unchanged rather than guessing
+    which scientific branch the user intended.
+    """
+    asp_out = Path(paths["asp_out"])
+    model_suffix = paths["model_suffix"]
+    pair = paths["pair"]
+    view_tag = paths["view_tag"]
+    images = paths["images"]
+    cameras = paths["cameras"]
+
+    if stage in {"preliminary_stereo", "camera_transform"}:
+        if not _adjustments_ready(paths["ba_prefix"], images, settings.image_names, cameras):
+            dirs = sorted(asp_out.glob(f"ba{model_suffix}_{view_tag}"))
+            prefixes = [d / view_tag for d in dirs]
+            valid = [p for p in prefixes if _adjustments_ready(p, images, settings.image_names, cameras)]
+            if len(valid) == 1:
+                paths["ba_prefix"] = valid[0]
+
+    if stage == "preliminary_dem" and not Path(paths["prelim_point_cloud"]).is_file():
+        candidate = _unique_existing_candidate(
+            asp_out.glob(f"dems/stereo_preliminary_*{model_suffix}/preliminary-PC.tif")
+        )
+        if candidate is not None:
+            paths["prelim_point_cloud"] = candidate
+
+    if stage == "lidar_alignment" and not Path(paths["prelim_dem"]).is_file():
+        candidate = _unique_existing_candidate(
+            asp_out.glob(f"dems/preliminary_*{model_suffix}-DEM.tif")
+        )
+        if candidate is not None:
+            paths["prelim_dem"] = candidate
+            match = re.search(r"preliminary_([ABC]{2})", candidate.name)
+            if match:
+                pair = match.group(1)
+                paths["pair"] = pair
+                paths["align_prefix"] = asp_out / "dems" / "align" / f"preliminary_{pair}_to_LiDAR{model_suffix}"
+                paths["align_transform"] = Path(f"{paths['align_prefix']}-transform.txt")
+                paths["align_log"] = paths["log_dir"] / f"pc_align.preliminary_{pair}_to_LiDAR{model_suffix}.log"
+
+    if stage == "camera_transform" and not Path(paths["align_transform"]).is_file():
+        candidate = _unique_existing_candidate(
+            (asp_out / "dems" / "align").glob(f"*-transform.txt")
+        )
+        if candidate is not None:
+            paths["align_transform"] = candidate
+
+    if stage == "map_projection" and not _adjustments_ready(
+        paths["aligned_ba_prefix"], images, settings.image_names, cameras
+    ):
+        dirs = sorted(asp_out.glob(f"ba_aligned{model_suffix}_{view_tag}"))
+        prefixes = [d / view_tag for d in dirs]
+        valid = [p for p in prefixes if _adjustments_ready(p, images, settings.image_names, cameras)]
+        if len(valid) == 1:
+            paths["aligned_ba_prefix"] = valid[0]
+
+    return paths
+
+
+
+def _select_restore_file(candidates, preferred_tokens=()):
+    """Select the most plausible existing product for display-only restoration.
+
+    Exact current-workflow paths are always tried before this helper.  This
+    fallback exists for projects produced by older notebook releases whose
+    filenames differ slightly from the current interface.  Preference tokens
+    are used only for display restoration; no processing branch is rerun.
+    """
+    files = []
+    seen = set()
+    for candidate in candidates:
+        path = Path(candidate)
+        if not path.is_file():
+            continue
+        try:
+            key = str(path.resolve())
+        except Exception:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        files.append(path)
+
+    if not files:
+        return None
+
+    tokens = [str(token).lower() for token in preferred_tokens if str(token).strip()]
+
+    def score(path):
+        name = str(path).lower()
+        token_score = sum(1 for token in tokens if token in name)
+        # Prefer the canonical workflow mapprojection products over sensitivity
+        # experiment filenames such as Al1m_MP50m when both exist.
+        canonical_bonus = 1 if "_ba" in path.name.lower() else 0
+        try:
+            mtime = path.stat().st_mtime
+        except Exception:
+            mtime = 0.0
+        return (token_score, canonical_bonus, mtime, str(path))
+
+    return max(files, key=score)
+
+
+def _restore_saved_preprocess_paths(saved_state, paths, views):
+    """Reuse exact preprocessing product paths recorded in processing_state.json.
+
+    Older interface releases already saved the resolved paths of important ASP
+    products.  When reopening a project, those exact paths are more reliable than
+    reconstructing filenames from current naming conventions.  Only paths that
+    still exist are adopted; missing/stale entries are left for the legacy
+    discovery fallback.
+    """
+    saved_state = saved_state or {}
+
+    def existing_file(value):
+        if not value:
+            return None
+        try:
+            candidate = Path(value).expanduser()
+        except Exception:
+            return None
+        return candidate if candidate.is_file() else None
+
+    def existing_prefix(value):
+        if not value:
+            return None
+        try:
+            candidate = Path(value).expanduser()
+        except Exception:
+            return None
+        # ASP adjustment prefixes are not files themselves.  Accept the saved
+        # prefix when any sibling product begins with its basename.
+        parent = candidate.parent
+        if parent.is_dir() and any(parent.glob(candidate.name + "*")):
+            return candidate
+        return None
+
+    saved_pc = existing_file(saved_state.get("preliminary_point_cloud"))
+    if saved_pc is not None:
+        paths["prelim_point_cloud"] = saved_pc
+        if saved_pc.name.endswith("-PC.tif"):
+            paths["prelim_prefix"] = saved_pc.with_name(saved_pc.name[:-7])
+        paths["prelim_stereo_dir"] = saved_pc.parent
+
+    saved_dem = existing_file(saved_state.get("preliminary_dem"))
+    if saved_dem is not None:
+        paths["prelim_dem"] = saved_dem
+        if saved_dem.name.endswith("-DEM.tif"):
+            paths["prelim_dem_prefix"] = saved_dem.with_name(saved_dem.name[:-8])
+
+    saved_transform = existing_file(saved_state.get("alignment_transform"))
+    if saved_transform is not None:
+        paths["align_transform"] = saved_transform
+        if saved_transform.name.endswith("-transform.txt"):
+            paths["align_prefix"] = saved_transform.with_name(
+                saved_transform.name[:-14]
+            )
+
+    saved_ba = existing_prefix(saved_state.get("ba_prefix"))
+    if saved_ba is not None:
+        paths["ba_prefix"] = saved_ba
+
+    saved_aligned_ba = existing_prefix(saved_state.get("aligned_ba_prefix"))
+    if saved_aligned_ba is not None:
+        paths["aligned_ba_prefix"] = saved_aligned_ba
+
+    saved_maps = saved_state.get("mapprojected_images")
+    if isinstance(saved_maps, dict):
+        for view in views:
+            candidate = existing_file(saved_maps.get(view))
+            if candidate is not None:
+                paths["mapprojected"][view] = candidate
+
+    return paths
+
+
+def _restore_legacy_preprocess_paths(settings, processing, paths):
+    """Resolve existing preprocessing products from both current and legacy names.
+
+    This function is deliberately read-only.  It is used only when reopening an
+    existing project so the UI can rebuild the same result tables/figures that
+    were shown when the stages originally ran.
+    """
+    asp_out = Path(paths["asp_out"])
+    log_dir = Path(paths["log_dir"])
+    pair = str(paths.get("pair", processing.preliminary_pair)).upper()
+    model_suffix = str(paths.get("model_suffix", ""))
+
+    # Preliminary point cloud.
+    if not Path(paths["prelim_point_cloud"]).is_file():
+        candidate = _select_restore_file(
+            list(asp_out.glob(f"dems/stereo_preliminary_{pair}*/preliminary-PC.tif"))
+            + list(asp_out.glob("dems/stereo_preliminary_*/preliminary-PC.tif")),
+            preferred_tokens=(pair, model_suffix),
+        )
+        if candidate is not None:
+            paths["prelim_point_cloud"] = candidate
+            paths["prelim_prefix"] = candidate.with_name("preliminary")
+            paths["prelim_stereo_dir"] = candidate.parent
+            import re as _re
+            match = _re.search(r"stereo_preliminary_([ABC]{2})", candidate.parent.name)
+            if match:
+                pair = match.group(1)
+                paths["pair"] = pair
+
+    # Preliminary DSM.  First check the historical canonical names, then use
+    # a recursive case-insensitive fallback because several early notebooks
+    # stored the point2dem output in slightly different subfolders/names.
+    if not Path(paths["prelim_dem"]).is_file():
+        recursive_prelim_dems = [
+            path
+            for path in asp_out.rglob("*.tif")
+            if "prelim" in path.name.lower()
+            and "dem" in path.name.lower()
+        ]
+
+        # Some early projects switched between cropped_data and full_data while
+        # keeping the same project folder.  If the active ASP root does not
+        # contain the preliminary DSM, search the project itself rather than
+        # requiring a rerun of point2dem.
+        project_prelim_dems = []
+        project_dir = getattr(settings, "project_dir", None)
+        if project_dir is not None:
+            project_dir = Path(project_dir)
+            if project_dir.is_dir():
+                project_prelim_dems = [
+                    path
+                    for path in project_dir.rglob("*.tif")
+                    if "prelim" in path.name.lower()
+                    and "dem" in path.name.lower()
+                    and "mapproject" not in str(path).lower()
+                ]
+
+        candidate = _select_restore_file(
+            list(asp_out.glob(f"dems/preliminary_{pair}*-DEM.tif"))
+            + list(asp_out.glob("dems/preliminary_*-DEM.tif"))
+            + recursive_prelim_dems
+            + project_prelim_dems,
+            preferred_tokens=(pair, model_suffix, "prelim", "asp_out"),
+        )
+        if candidate is not None:
+            paths["prelim_dem"] = candidate
+            name = candidate.name
+            if name.lower().endswith("-dem.tif"):
+                paths["prelim_dem_prefix"] = candidate.with_name(name[:-8])
+            import re as _re
+            match = _re.search(r"preliminary_([ABC]{2})", candidate.name, _re.I)
+            if match:
+                pair = match.group(1).upper()
+                paths["pair"] = pair
+
+    # Legacy preliminary DSM log names used `preliminary_point2dem.<pair>.log`.
+    if not Path(paths["prelim_dem_log"]).is_file():
+        candidate = _select_restore_file(
+            list(log_dir.glob(f"*preliminary*point2dem*{pair}*.log"))
+            + list(log_dir.glob(f"*point2dem*{pair}*.log")),
+            preferred_tokens=(pair,),
+        )
+        if candidate is not None:
+            paths["prelim_dem_log"] = candidate
+
+    # pc_align transform and log.
+    if not Path(paths["align_transform"]).is_file():
+        candidate = _select_restore_file(
+            list((asp_out / "dems" / "align").glob(f"*{pair}*-transform.txt"))
+            + list((asp_out / "dems" / "align").glob("*-transform.txt")),
+            preferred_tokens=(pair, "to_lidar", model_suffix),
+        )
+        if candidate is not None:
+            paths["align_transform"] = candidate
+            if candidate.name.endswith("-transform.txt"):
+                paths["align_prefix"] = candidate.with_name(candidate.name[:-14])
+
+    if not Path(paths["align_log"]).is_file():
+        candidate = _select_restore_file(
+            list(log_dir.glob(f"*pc_align*{pair}*.log"))
+            + list(log_dir.glob("*pc_align*.log")),
+            preferred_tokens=(pair,),
+        )
+        if candidate is not None:
+            paths["align_log"] = candidate
+
+    # Legacy/current mapprojection outputs.  Prefer the canonical baLxx product
+    # for the configured map DEM over sensitivity-test copies.
+    map_dir = Path(paths["mapproject_dir"])
+    try:
+        map_label = _dem_resolution_label(Path(processing.mapproject_dem))
+    except Exception:
+        map_label = ""
+    raw_tag = f"{float(processing.raw_resolution_m):g}m"
+    resolved_map = dict(paths["mapprojected"])
+    for view in settings.image_names:
+        expected = Path(resolved_map[view])
+        if expected.is_file():
+            continue
+        candidates = (
+            list(map_dir.glob(f"{view}_{settings.project_name}_{raw_tag}_ba*.tif"))
+            + list(map_dir.glob(f"{view}_{settings.project_name}_*.tif"))
+            + list(map_dir.glob(f"{view}_*.tif"))
+        )
+        candidate = _select_restore_file(
+            candidates,
+            preferred_tokens=(settings.project_name, raw_tag, f"ba{map_label}" if map_label else ""),
+        )
+        if candidate is not None:
+            resolved_map[view] = candidate
+    paths["mapprojected"] = resolved_map
+
+    # Legacy/current per-view mapproject logs.
+    resolved_logs = dict(paths["mapproject_logs"])
+    for view in settings.image_names:
+        if Path(resolved_logs[view]).is_file():
+            continue
+        candidate = _select_restore_file(
+            list(log_dir.glob(f"mapproject.{view}*.log")),
+            preferred_tokens=(view,),
+        )
+        if candidate is not None:
+            resolved_logs[view] = candidate
+    paths["mapproject_logs"] = resolved_logs
+
+    return paths
+
+def _resolve_single_stage_resume_context(settings, processing, selected_stages):
+    """Resolve a later single stage against already completed products on disk."""
+    paths = _preprocessing_paths(settings, processing)
+    if len(selected_stages) != 1:
+        return processing, paths, "current"
+
+    stage = selected_stages[0]
+    if _stage_prerequisites_ready(stage, settings, processing, paths):
+        return processing, paths, "current"
+
+    saved_processing = _processing_variant_from_saved_state(settings, processing)
+    if saved_processing is not None:
+        saved_paths = _preprocessing_paths(settings, saved_processing)
+        if _stage_prerequisites_ready(stage, settings, saved_processing, saved_paths):
+            return saved_processing, saved_paths, "saved project state"
+
+    paths = _discover_stage_prerequisites_from_disk(stage, settings, processing, paths)
+    if _stage_prerequisites_ready(stage, settings, processing, paths):
+        return processing, paths, "unique existing product discovered on disk"
+
+    return processing, paths, "current"
+
+
 def run_pre_processing(
     settings: ProjectSettings,
     processing: PreProcessingSettings,
     progress_callback=None,
     result_callback=None,
+    stages=None,
 ):
     """
-    Run the original pre-processing sequence and emit a compact result
-    after every stage so the Jupyter tabs can be inspected while the
-    next ASP command is running.
+    Run all preprocessing stages (default) or only selected stages.
+
+    Stage-only execution reuses prerequisite files already present on disk,
+    allowing a failed or experimentally modified stage to be rerun without
+    repeating successful upstream ASP commands.
     """
     create_project_folders(settings)
 
+    if settings.acquisition_mode == "tri_stereo" and not _tri_stereo_normalization_ready(settings):
+        raise ValueError(
+            "Run Metadata and geometry after Prepare data before ASP preprocessing. "
+            "The tri-stereo prepared copies must first be normalized to "
+            "A=Forward (F), B=Middle/near-nadir (M), C=Backward (B)."
+        )
+
+    selected_stages = _normalized_preprocess_stages(stages)
+    selected_set = set(selected_stages)
+    run_all = selected_stages == PREPROCESS_STAGE_ORDER
+
+    # For a single-stage resume, first try the current UI configuration, then
+    # automatically reuse the last successful project configuration / unique
+    # upstream product already on disk. This removes the artificial need to
+    # rerun the immediately preceding stage after reopening the notebook.
+    processing, paths, resume_context = _resolve_single_stage_resume_context(
+        settings, processing, selected_stages
+    )
+
+    ba_cost_function = _clean_optional_string(processing.ba_cost_function)
+    # The interface suggests ASP's documented values but deliberately allows
+    # a custom string for newer/experimental ASP builds. If blank, the option
+    # is omitted and ASP falls back to its documented default. ASP itself
+    # remains the authority and will reject an unsupported value with a logged error.
+
     alignment_dem = Path(
         processing.alignment_dem
-    ).expanduser()
+    ).expanduser() if str(processing.alignment_dem).strip() else None
 
     mapproject_dem = Path(
         processing.mapproject_dem
-    ).expanduser()
+    ).expanduser() if str(processing.mapproject_dem).strip() else None
 
-    _require_existing_files(
-        alignment_dem,
-        mapproject_dem,
-    )
+    if "lidar_alignment" in selected_set:
+        if alignment_dem is None:
+            raise ValueError(
+                "Reference alignment requires an alignment reference DEM."
+            )
+        _require_existing_files(alignment_dem)
 
-    paths = _preprocessing_paths(
-        settings,
-        processing,
-    )
+    if "map_projection" in selected_set:
+        if mapproject_dem is None:
+            raise ValueError(
+                "Map projection requires a map-projection reference DEM."
+            )
+        _require_existing_files(mapproject_dem)
 
-    summary_log = (
-        settings.log_dir
-        / "pre_processing.log"
-    )
+    suffix = "" if run_all else "_" + "_".join(selected_stages)
+    summary_log = settings.log_dir / f"pre_processing{suffix}.log"
 
     current_stage = None
     current_log = None
+
+    residual_summary = None
+    residual_csv = None
+    prelim_plot = None
+    alignment_results = None
+    camera_table = None
+    map_table = None
+    map_plot = None
 
     def emit(stage, status, payload=None):
         if result_callback is not None:
@@ -2814,584 +5513,506 @@ def run_pre_processing(
     with WorkflowLog(summary_log) as summary:
         try:
             images = paths["images"]
-            rpcs = paths["rpcs"]
+            cameras = paths["cameras"]
+            session_type = paths["session_type"]
+
+            summary.write(
+                "Selected preprocessing stages: "
+                + ", ".join(selected_stages)
+            )
+            if not run_all:
+                summary.write(f"Single-stage prerequisite context: {resume_context}")
 
             # ------------------------------------------------
             # 1. BUNDLE ADJUSTMENT
             # ------------------------------------------------
-            current_stage = "bundle_adjustment"
-            current_log = paths["ba_log"]
+            if "bundle_adjustment" in selected_set:
+                current_stage = "bundle_adjustment"
+                current_log = paths["ba_log"]
 
-            if progress_callback:
-                progress_callback(
-                    5,
-                    "Bundle adjustment",
+                if progress_callback:
+                    progress_callback(5, "Bundle adjustment")
+
+                emit(
+                    current_stage,
+                    "running",
+                    {
+                        "camera_model": paths["camera_model"],
+                        "session_type": session_type,
+                        "robust_threshold": processing.ba_robust_threshold,
+                        "max_iterations": processing.ba_max_iterations,
+                        "cost_function": ba_cost_function,
+                        "datum": "WGS84",
+                        "log": paths["ba_log"],
+                    },
                 )
 
-            emit(
-                current_stage,
-                "running",
-                {
-                    "log": paths["ba_log"],
-                },
-            )
-
-            _prepare_output_prefix(
-                paths["ba_prefix"],
-                paths["ba_log"],
-                settings.overwrite,
-            )
-
-            _run_asp_command(
-                "bundle_adjust",
-                [
-                    "-t",
-                    "rpc",
-                    *[
-                        images[view]
-                        for view in settings.image_names
-                    ],
-                    *[
-                        rpcs[view]
-                        for view in settings.image_names
-                    ],
-                    "--cost-function",
-                    "Cauchy",
-                    "--robust-threshold",
-                    processing.ba_robust_threshold,
-                    "--max-iterations",
-                    processing.ba_max_iterations,
-                    "--datum",
-                    "WGS84",
-                    "--threads",
-                    0,
-                    "--tif-compress",
-                    "Deflate",
-                    "-o",
+                _prepare_output_prefix(
                     paths["ba_prefix"],
-                ],
-                paths["ba_log"],
-                paths["processing_root"],
-            )
-
-            residual_summary = (
-                _bundle_adjustment_residual_summary(
-                    paths["ba_prefix"],
-                    settings.image_names,
+                    paths["ba_log"],
+                    settings.overwrite,
                 )
-            )
 
-            residual_csv = (
-                settings.metadata_dir
-                / "bundle_adjustment_residuals.csv"
-            )
+                # Exact Airbus DIM cameras are backed by the USGS CSM linescan
+                # model. Validate image/camera pairing before the more expensive BA.
+                # The DIM XML deliberately keeps its DIM_A/DIM_B/DIM_C name; ASP
+                # pairs images and cameras by command-line order, not basename.
+                if paths["camera_model"] == "pleiades":
+                    _preflight_exact_pleiades_cameras(settings, paths)
 
-            residual_summary.to_csv(
-                residual_csv
-            )
+                ba_args = [
+                    "-t", session_type,
+                    *[images[view] for view in settings.image_names],
+                    *[cameras[view] for view in settings.image_names],
+                ]
 
-            emit(
-                current_stage,
-                "completed",
-                {
-                    "table": residual_summary,
-                    "csv": residual_csv,
-                    "prefix": paths["ba_prefix"],
-                    "log": paths["ba_log"],
-                },
-            )
+                # Follow ASP's documented Pléiades exact-camera recipe. This is
+                # especially important for ASP 3.3.x, where tri-weight defaulted
+                # to 0 rather than the later 0.1 default.
+                if paths["camera_model"] == "pleiades":
+                    ba_args.extend([
+                        "--camera-weight", 0,
+                        "--tri-weight", 0.1,
+                    ])
 
-            summary.write(
-                f"Bundle adjustment completed: "
-                f"{paths['ba_prefix']}"
-            )
+                if ba_cost_function is not None:
+                    ba_args.extend(["--cost-function", ba_cost_function])
+                if processing.ba_robust_threshold is not None:
+                    ba_args.extend(["--robust-threshold", processing.ba_robust_threshold])
+                if processing.ba_max_iterations is not None:
+                    ba_args.extend(["--num-iterations", processing.ba_max_iterations])
+
+                ba_args.extend([
+                    "--datum", "WGS84",
+                    "--threads", 0,
+                    "--tif-compress", "Deflate",
+                    "-o", paths["ba_prefix"],
+                ])
+
+                _run_asp_command(
+                    "bundle_adjust",
+                    ba_args,
+                    paths["ba_log"],
+                    paths["processing_root"],
+                )
+
+                ba_adjustments = _require_adjustments(
+                    paths["ba_prefix"], images, settings.image_names, cameras
+                )
+
+                adjustment_table = pd.DataFrame([
+                    {
+                        "View": view,
+                        "Image": Path(images[view]).name,
+                        "Camera XML": Path(cameras[view]).name,
+                        "ASP session": f"-t {session_type}",
+                        "Adjustment / state": Path(adjustment).name,
+                    }
+                    for view, adjustment in zip(settings.image_names, ba_adjustments)
+                ])
+
+                residual_summary = _bundle_adjustment_residual_summary(
+                    paths["ba_prefix"], settings.image_names
+                )
+                residual_csv = (
+                    settings.metadata_dir / "bundle_adjustment_residuals.csv"
+                )
+                residual_summary.to_csv(residual_csv)
+
+                emit(
+                    current_stage,
+                    "completed",
+                    {
+                        "table": residual_summary,
+                        "adjustment_table": adjustment_table,
+                        "csv": residual_csv,
+                        "prefix": paths["ba_prefix"],
+                        "camera_model": paths["camera_model"],
+                        "session_type": session_type,
+                        "robust_threshold": processing.ba_robust_threshold,
+                        "max_iterations": processing.ba_max_iterations,
+                        "cost_function": ba_cost_function,
+                        "datum": "WGS84",
+                        "log": paths["ba_log"],
+                    },
+                )
+
+                summary.write(
+                    f"Bundle adjustment completed: {paths['ba_prefix']}"
+                )
 
             # ------------------------------------------------
             # 2. INITIAL STEREO CORRELATION
             # ------------------------------------------------
-            current_stage = "preliminary_stereo"
-            current_log = paths["prelim_log"]
+            if "preliminary_stereo" in selected_set:
+                current_stage = "preliminary_stereo"
+                current_log = paths["prelim_log"]
 
-            if progress_callback:
-                progress_callback(
-                    25,
-                    (
-                        "Preliminary stereo "
-                        f"{paths['pair']}"
-                    ),
-                )
-
-            left = paths["pair"][0]
-            right = paths["pair"][1]
-
-            emit(
-                current_stage,
-                "running",
-                {
-                    "pair": paths["pair"],
-                    "left": images[left],
-                    "right": images[right],
-                    "prefix": paths["prelim_prefix"],
-                    "algorithm": processing.prelim_stereo_algorithm,
-                    "cost_mode": processing.prelim_cost_mode,
-                    "corr_kernel": processing.prelim_corr_kernel,
-                    "subpixel_kernel": processing.prelim_subpixel_kernel,
-                    "xcorr_threshold": processing.prelim_xcorr_threshold,
-                    "subpixel_mode": processing.prelim_subpixel_mode,
-                    "log": paths["prelim_log"],
-                },
-            )
-
-            _prepare_run_directory(
-                paths["prelim_stereo_dir"],
-                paths["prelim_log"],
-                settings.overwrite,
-            )
-
-            _run_asp_command(
-                "parallel_stereo",
-                [
-                    "-t",
-                    "rpc",
-                    "--stereo-algorithm",
-                    processing.prelim_stereo_algorithm,
-                    "--xcorr-threshold",
-                    processing.prelim_xcorr_threshold,
-                    "--cost-mode",
-                    processing.prelim_cost_mode,
-                    "--corr-kernel",
-                    processing.prelim_corr_kernel,
-                    processing.prelim_corr_kernel,
-                    "--subpixel-kernel",
-                    processing.prelim_subpixel_kernel,
-                    processing.prelim_subpixel_kernel,
-                    "--corr-tile-size",
-                    processing.corr_tile_size,
-                    "--corr-memory-limit-mb",
-                    processing.corr_memory_limit_mb,
-                    "--subpixel-mode",
-                    processing.prelim_subpixel_mode,
-                    "--bundle-adjust-prefix",
-                    paths["ba_prefix"],
-                    images[left],
-                    images[right],
-                    rpcs[left],
-                    rpcs[right],
-                    paths["prelim_prefix"],
-                ],
-                paths["prelim_log"],
-                paths["processing_root"],
-            )
-
-            _require_existing_files(
-                paths["prelim_point_cloud"]
-            )
-
-            point_cloud_info = _raster_basic_summary(
-                paths["prelim_point_cloud"]
-            )
-
-            emit(
-                current_stage,
-                "completed",
-                {
-                    "pair": paths["pair"],
-                    "left": images[left],
-                    "right": images[right],
-                    "prefix": paths["prelim_prefix"],
-                    "algorithm": processing.prelim_stereo_algorithm,
-                    "cost_mode": processing.prelim_cost_mode,
-                    "corr_kernel": processing.prelim_corr_kernel,
-                    "subpixel_kernel": processing.prelim_subpixel_kernel,
-                    "xcorr_threshold": processing.prelim_xcorr_threshold,
-                    "subpixel_mode": processing.prelim_subpixel_mode,
-                    "point_cloud": paths["prelim_point_cloud"],
-                    "point_cloud_info": point_cloud_info,
-                    "log": paths["prelim_log"],
-                },
-            )
-
-            summary.write(
-                f"Preliminary point cloud: "
-                f"{paths['prelim_point_cloud']}"
-            )
-
-            # ------------------------------------------------
-            # 3. PRELIMINARY ALIGNMENT DEM
-            # ------------------------------------------------
-            current_stage = "preliminary_dem"
-            current_log = paths["prelim_dem_log"]
-
-            if progress_callback:
-                progress_callback(
-                    45,
-                    "Preliminary alignment DEM",
-                )
-
-            emit(
-                current_stage,
-                "running",
-                {
-                    "point_cloud": paths["prelim_point_cloud"],
-                    "dem": paths["prelim_dem"],
-                    "log": paths["prelim_dem_log"],
-                },
-            )
-
-            _prepare_output_prefix(
-                paths["prelim_dem_prefix"],
-                paths["prelim_dem_log"],
-                settings.overwrite,
-            )
-
-            _run_asp_command(
-                "point2dem",
-                [
-                    "--t_srs",
-                    f"EPSG:{processing.target_epsg}",
-                    "--tr",
-                    processing.prelim_dem_resolution_m,
-                    "--threads",
-                    0,
-                    "--nodata-value",
-                    processing.prelim_dem_nodata,
-                    paths["prelim_point_cloud"],
-                    "-o",
-                    paths["prelim_dem_prefix"],
-                ],
-                paths["prelim_dem_log"],
-                paths["processing_root"],
-            )
-
-            _require_existing_files(
-                paths["prelim_dem"]
-            )
-
-            prelim_plot = (
-                _plot_preliminary_dem_from_path(
-                    settings,
-                    paths["prelim_dem"],
-                    paths["pair"],
-                )
-            )
-
-            dem_info = _raster_basic_summary(
-                paths["prelim_dem"]
-            )
-
-            emit(
-                current_stage,
-                "completed",
-                {
-                    "point_cloud": paths["prelim_point_cloud"],
-                    "dem": paths["prelim_dem"],
-                    "dem_info": dem_info,
-                    "plot": prelim_plot,
-                    "log": paths["prelim_dem_log"],
-                },
-            )
-
-            summary.write(
-                f"Preliminary DEM: "
-                f"{paths['prelim_dem']}"
-            )
-
-            # ------------------------------------------------
-            # 4. pc_align TO HIGH-RESOLUTION LiDAR
-            # ------------------------------------------------
-            current_stage = "lidar_alignment"
-            current_log = paths["align_log"]
-
-            if progress_callback:
-                progress_callback(
-                    60,
-                    "Aligning preliminary DEM to LiDAR",
-                )
-
-            emit(
-                current_stage,
-                "running",
-                {
-                    "reference": alignment_dem,
-                    "source": paths["prelim_dem"],
-                    "transform": paths["align_transform"],
-                    "log": paths["align_log"],
-                },
-            )
-
-            _prepare_output_prefix(
-                paths["align_prefix"],
-                paths["align_log"],
-                settings.overwrite,
-            )
-
-            _run_asp_command(
-                "pc_align",
-                [
-                    "--max-displacement",
-                    processing.pc_align_max_displacement_m,
-                    "--num-iterations",
-                    processing.pc_align_iterations,
-                    alignment_dem,
-                    paths["prelim_dem"],
-                    "-o",
-                    paths["align_prefix"],
-                ],
-                paths["align_log"],
-                paths["processing_root"],
-            )
-
-            _require_existing_files(
-                paths["align_transform"]
-            )
-
-            alignment_results = (
-                _parse_pc_align_original_results(
-                    paths["align_log"],
-                    paths["align_transform"],
-                )
-            )
-
-            emit(
-                current_stage,
-                "completed",
-                {
-                    "reference": alignment_dem,
-                    "source": paths["prelim_dem"],
-                    "transform": paths["align_transform"],
-                    "alignment_results": alignment_results,
-                    "log": paths["align_log"],
-                },
-            )
-
-            summary.write(
-                f"Alignment transform: "
-                f"{paths['align_transform']}"
-            )
-
-            # ------------------------------------------------
-            # 5. APPLY TRANSFORM TO ALL CAMERA MODELS
-            # ------------------------------------------------
-            current_stage = "camera_transform"
-            current_log = paths["aligned_ba_log"]
-
-            if progress_callback:
-                progress_callback(
-                    72,
-                    "Applying alignment transform to cameras",
-                )
-
-            emit(
-                current_stage,
-                "running",
-                {
-                    "transform": paths["align_transform"],
-                    "prefix": paths["aligned_ba_prefix"],
-                    "log": paths["aligned_ba_log"],
-                },
-            )
-
-            _prepare_output_prefix(
-                paths["aligned_ba_prefix"],
-                paths["aligned_ba_log"],
-                settings.overwrite,
-            )
-
-            _run_asp_command(
-                "bundle_adjust",
-                [
-                    "-t",
-                    "rpc",
-                    *[
-                        images[view]
-                        for view in settings.image_names
-                    ],
-                    *[
-                        rpcs[view]
-                        for view in settings.image_names
-                    ],
-                    "--initial-transform",
-                    paths["align_transform"],
-                    "--input-adjustments-prefix",
-                    paths["ba_prefix"],
-                    "--apply-initial-transform-only",
-                    "--datum",
-                    "WGS84",
-                    "--threads",
-                    processing.aligned_ba_threads,
-                    "--tif-compress",
-                    "Deflate",
-                    "-o",
-                    paths["aligned_ba_prefix"],
-                ],
-                paths["aligned_ba_log"],
-                paths["processing_root"],
-            )
-
-            for view in settings.image_names:
-                stem = images[view].stem
-
-                _require_existing_files(
-                    Path(
-                        f"{paths['aligned_ba_prefix']}-"
-                        f"{stem}.adjust"
-                    )
-                )
-
-            camera_table = _camera_adjustment_table(
-                settings,
-                paths,
-            )
-
-            emit(
-                current_stage,
-                "completed",
-                {
-                    "table": camera_table,
-                    "transform": paths["align_transform"],
-                    "prefix": paths["aligned_ba_prefix"],
-                    "log": paths["aligned_ba_log"],
-                },
-            )
-
-            # ------------------------------------------------
-            # 6. MAP PROJECT ALL ACTIVE IMAGES
-            # ------------------------------------------------
-            current_stage = "map_projection"
-            current_log = None
-
-            if progress_callback:
-                progress_callback(
-                    82,
-                    "Map-projecting active images",
-                )
-
-            emit(
-                current_stage,
-                "running",
-                {
-                    "mapproject_dem": mapproject_dem,
-                    "outputs": paths["mapprojected"],
-                    "logs": paths["mapproject_logs"],
-                },
-            )
-
-            paths["mapproject_dir"].mkdir(
-                parents=True,
-                exist_ok=True,
-            )
-
-            for index, view in enumerate(
-                settings.image_names,
-                start=1,
-            ):
-                output_image = (
-                    paths["mapprojected"][view]
-                )
-
-                current_log = (
-                    paths["mapproject_logs"][view]
-                )
-
-                _prepare_output_prefix(
-                    output_image,
-                    current_log,
-                    settings.overwrite,
-                )
-
-                _run_asp_command(
-                    "mapproject",
-                    [
-                        "-t",
-                        "rpc",
-                        "--threads",
-                        processing.mapproject_threads,
-                        "--tr",
-                        processing.raw_resolution_m,
-                        "--t_srs",
-                        f"EPSG:{processing.target_epsg}",
-                        "--bundle-adjust-prefix",
-                        paths["aligned_ba_prefix"],
-                        "--tif-compress",
-                        "Deflate",
-                        mapproject_dem,
-                        images[view],
-                        rpcs[view],
-                        output_image,
-                    ],
-                    current_log,
-                    paths["processing_root"],
-                )
-
-                _require_existing_files(
-                    output_image
+                _require_adjustments(
+                    paths["ba_prefix"], images, settings.image_names, cameras
                 )
 
                 if progress_callback:
                     progress_callback(
-                        82
-                        + int(
-                            index
-                            / len(settings.image_names)
-                            * 14
-                        ),
-                        f"Map-projected {view}",
+                        25, f"Preliminary stereo {paths['pair']}"
                     )
 
-            map_plot = (
-                _plot_mapprojected_from_paths(
+                left = paths["pair"][0]
+                right = paths["pair"][1]
+
+                stereo_payload = {
+                    "pair": paths["pair"],
+                    "left": images[left],
+                    "right": images[right],
+                    "prefix": paths["prelim_prefix"],
+                    "algorithm": processing.prelim_stereo_algorithm,
+                    "cost_mode": processing.prelim_cost_mode,
+                    "corr_kernel": processing.prelim_corr_kernel,
+                    "subpixel_kernel": processing.prelim_subpixel_kernel,
+                    "xcorr_threshold": processing.prelim_xcorr_threshold,
+                    "subpixel_mode": processing.prelim_subpixel_mode,
+                    "corr_memory_limit_mb": processing.corr_memory_limit_mb,
+                    "corr_tile_size": processing.corr_tile_size,
+                    "log": paths["prelim_log"],
+                }
+                emit(current_stage, "running", stereo_payload)
+
+                _prepare_run_directory(
+                    paths["prelim_stereo_dir"],
+                    paths["prelim_log"],
+                    settings.overwrite,
+                )
+
+                _run_asp_command(
+                    "parallel_stereo",
+                    [
+                        "-t", session_type,
+                        "--stereo-algorithm", processing.prelim_stereo_algorithm,
+                        "--xcorr-threshold", processing.prelim_xcorr_threshold,
+                        "--cost-mode", processing.prelim_cost_mode,
+                        "--corr-kernel",
+                        processing.prelim_corr_kernel,
+                        processing.prelim_corr_kernel,
+                        "--subpixel-kernel",
+                        processing.prelim_subpixel_kernel,
+                        processing.prelim_subpixel_kernel,
+                        "--corr-tile-size", processing.corr_tile_size,
+                        "--corr-memory-limit-mb", processing.corr_memory_limit_mb,
+                        "--subpixel-mode", processing.prelim_subpixel_mode,
+                        "--bundle-adjust-prefix", paths["ba_prefix"],
+                        images[left], images[right],
+                        cameras[left], cameras[right],
+                        paths["prelim_prefix"],
+                    ],
+                    paths["prelim_log"],
+                    paths["processing_root"],
+                )
+
+                _require_existing_files(paths["prelim_point_cloud"])
+                point_cloud_info = _raster_basic_summary(
+                    paths["prelim_point_cloud"]
+                )
+
+                emit(
+                    current_stage,
+                    "completed",
+                    {
+                        **stereo_payload,
+                        "point_cloud": paths["prelim_point_cloud"],
+                        "point_cloud_info": point_cloud_info,
+                    },
+                )
+                summary.write(
+                    f"Preliminary point cloud: {paths['prelim_point_cloud']}"
+                )
+
+            # ------------------------------------------------
+            # 3. PRELIMINARY ALIGNMENT DEM
+            # ------------------------------------------------
+            if "preliminary_dem" in selected_set:
+                current_stage = "preliminary_dem"
+                current_log = paths["prelim_dem_log"]
+
+                _require_existing_files(paths["prelim_point_cloud"])
+
+                if progress_callback:
+                    progress_callback(45, "Preliminary alignment DEM")
+
+                dem_payload = {
+                    "point_cloud": paths["prelim_point_cloud"],
+                    "dem": paths["prelim_dem"],
+                    "resolution_m": processing.prelim_dem_resolution_m,
+                    "nodata": processing.prelim_dem_nodata,
+                    "target_epsg": processing.target_epsg,
+                    "log": paths["prelim_dem_log"],
+                }
+                emit(current_stage, "running", dem_payload)
+
+                _prepare_output_prefix(
+                    paths["prelim_dem_prefix"],
+                    paths["prelim_dem_log"],
+                    settings.overwrite,
+                )
+
+                _run_asp_command(
+                    "point2dem",
+                    [
+                        "--t_srs", f"EPSG:{processing.target_epsg}",
+                        "--tr", processing.prelim_dem_resolution_m,
+                        "--threads", 0,
+                        "--nodata-value", processing.prelim_dem_nodata,
+                        paths["prelim_point_cloud"],
+                        "-o", paths["prelim_dem_prefix"],
+                    ],
+                    paths["prelim_dem_log"],
+                    paths["processing_root"],
+                )
+
+                _require_existing_files(paths["prelim_dem"])
+                prelim_plot = _plot_preliminary_dem_from_path(
+                    settings, paths["prelim_dem"], paths["pair"]
+                )
+                dem_info = _raster_basic_summary(paths["prelim_dem"])
+
+                emit(
+                    current_stage,
+                    "completed",
+                    {
+                        **dem_payload,
+                        "dem_info": dem_info,
+                        "plot": prelim_plot,
+                    },
+                )
+                summary.write(f"Preliminary DEM: {paths['prelim_dem']}")
+
+            # ------------------------------------------------
+            # 4. pc_align TO EXTERNAL REFERENCE DEM
+            # ------------------------------------------------
+            if "lidar_alignment" in selected_set:
+                current_stage = "lidar_alignment"
+                current_log = paths["align_log"]
+
+                _require_existing_files(paths["prelim_dem"], alignment_dem)
+
+                if progress_callback:
+                    progress_callback(
+                        60, "Aligning preliminary DEM to reference DEM"
+                    )
+
+                align_payload = {
+                    "reference": alignment_dem,
+                    "source": paths["prelim_dem"],
+                    "transform": paths["align_transform"],
+                    "max_displacement_m": processing.pc_align_max_displacement_m,
+                    "iterations": processing.pc_align_iterations,
+                    "log": paths["align_log"],
+                }
+                emit(current_stage, "running", align_payload)
+
+                _prepare_output_prefix(
+                    paths["align_prefix"],
+                    paths["align_log"],
+                    settings.overwrite,
+                )
+
+                _run_asp_command(
+                    "pc_align",
+                    [
+                        "--max-displacement",
+                        processing.pc_align_max_displacement_m,
+                        "--num-iterations",
+                        processing.pc_align_iterations,
+                        alignment_dem,
+                        paths["prelim_dem"],
+                        "-o", paths["align_prefix"],
+                    ],
+                    paths["align_log"],
+                    paths["processing_root"],
+                )
+
+                _require_existing_files(paths["align_transform"])
+                alignment_results = _parse_pc_align_original_results(
+                    paths["align_log"], paths["align_transform"]
+                )
+
+                emit(
+                    current_stage,
+                    "completed",
+                    {
+                        **align_payload,
+                        "alignment_results": alignment_results,
+                    },
+                )
+                summary.write(
+                    f"Alignment transform: {paths['align_transform']}"
+                )
+
+            # ------------------------------------------------
+            # 5. APPLY TRANSFORM TO ALL CAMERA MODELS
+            # ------------------------------------------------
+            if "camera_transform" in selected_set:
+                current_stage = "camera_transform"
+                current_log = paths["aligned_ba_log"]
+
+                _require_existing_files(paths["align_transform"])
+                _require_adjustments(
+                    paths["ba_prefix"], images, settings.image_names, cameras
+                )
+
+                if progress_callback:
+                    progress_callback(
+                        72, "Applying alignment transform to cameras"
+                    )
+
+                camera_payload = {
+                    "transform": paths["align_transform"],
+                    "prefix": paths["aligned_ba_prefix"],
+                    "threads": processing.aligned_ba_threads,
+                    "session_type": session_type,
+                    "log": paths["aligned_ba_log"],
+                }
+                emit(current_stage, "running", camera_payload)
+
+                _prepare_output_prefix(
+                    paths["aligned_ba_prefix"],
+                    paths["aligned_ba_log"],
+                    settings.overwrite,
+                )
+
+                _run_asp_command(
+                    "bundle_adjust",
+                    [
+                        "-t", session_type,
+                        *[images[view] for view in settings.image_names],
+                        *[cameras[view] for view in settings.image_names],
+                        "--initial-transform", paths["align_transform"],
+                        "--input-adjustments-prefix", paths["ba_prefix"],
+                        "--apply-initial-transform-only",
+                        "--datum", "WGS84",
+                        "--threads", processing.aligned_ba_threads,
+                        "--tif-compress", "Deflate",
+                        "-o", paths["aligned_ba_prefix"],
+                    ],
+                    paths["aligned_ba_log"],
+                    paths["processing_root"],
+                )
+
+                _require_adjustments(
+                    paths["aligned_ba_prefix"], images, settings.image_names, cameras
+                )
+                camera_table = _camera_adjustment_table(settings, paths)
+
+                emit(
+                    current_stage,
+                    "completed",
+                    {**camera_payload, "table": camera_table},
+                )
+
+            # ------------------------------------------------
+            # 6. MAP PROJECT ALL ACTIVE IMAGES
+            # ------------------------------------------------
+            if "map_projection" in selected_set:
+                current_stage = "map_projection"
+                current_log = None
+
+                _require_existing_files(mapproject_dem)
+                _require_adjustments(
+                    paths["aligned_ba_prefix"], images, settings.image_names, cameras
+                )
+
+                if progress_callback:
+                    progress_callback(82, "Map-projecting active images")
+
+                map_payload = {
+                    "mapproject_dem": mapproject_dem,
+                    "outputs": paths["mapprojected"],
+                    "logs": paths["mapproject_logs"],
+                    "resolution_m": processing.raw_resolution_m,
+                    "target_epsg": processing.target_epsg,
+                    "threads": processing.mapproject_threads,
+                }
+                emit(current_stage, "running", map_payload)
+
+                paths["mapproject_dir"].mkdir(parents=True, exist_ok=True)
+
+                for index, view in enumerate(settings.image_names, start=1):
+                    output_image = paths["mapprojected"][view]
+                    current_log = paths["mapproject_logs"][view]
+
+                    _prepare_output_prefix(
+                        output_image,
+                        current_log,
+                        settings.overwrite,
+                    )
+
+                    _run_asp_command(
+                        "mapproject",
+                        [
+                            "-t", session_type,
+                            "--threads", processing.mapproject_threads,
+                            "--tr", processing.raw_resolution_m,
+                            "--t_srs", f"EPSG:{processing.target_epsg}",
+                            "--bundle-adjust-prefix",
+                            paths["aligned_ba_prefix"],
+                            "--tif-compress", "Deflate",
+                            mapproject_dem,
+                            images[view],
+                            cameras[view],
+                            output_image,
+                        ],
+                        current_log,
+                        paths["processing_root"],
+                    )
+                    _require_existing_files(output_image)
+
+                    if progress_callback:
+                        progress_callback(
+                            82 + int(index / len(settings.image_names) * 14),
+                            f"Map-projected {view}",
+                        )
+
+                map_plot = _plot_mapprojected_from_paths(
                     settings,
                     paths["mapprojected"],
                     processing.target_epsg,
                 )
-            )
+                map_table = _mapproject_output_table(settings, paths)
 
-            map_table = _mapproject_output_table(
-                settings,
-                paths,
-            )
-
-            emit(
-                current_stage,
-                "completed",
-                {
-                    "table": map_table,
-                    "plot": map_plot,
-                    "mapproject_dem": mapproject_dem,
-                    "target_epsg": processing.target_epsg,
-                    "outputs": paths["mapprojected"],
-                    "logs": paths["mapproject_logs"],
-                },
-            )
+                emit(
+                    current_stage,
+                    "completed",
+                    {
+                        **map_payload,
+                        "table": map_table,
+                        "plot": map_plot,
+                    },
+                )
 
             state_path = _save_processing_state(
                 settings,
                 "pre_processing",
                 {
-                    "alignment_dem": str(
-                        alignment_dem
+                    "last_run_stages": list(selected_stages),
+                    "alignment_dem": (
+                        str(alignment_dem) if alignment_dem is not None else ""
                     ),
-                    "mapproject_dem": str(
-                        mapproject_dem
+                    "mapproject_dem": (
+                        str(mapproject_dem) if mapproject_dem is not None else ""
                     ),
-                    "target_epsg": (
-                        processing.target_epsg
-                    ),
-                    "raw_resolution_m": (
-                        processing.raw_resolution_m
-                    ),
-                    "preliminary_pair": (
-                        paths["pair"]
-                    ),
+                    "target_epsg": processing.target_epsg,
+                    "camera_model": paths["camera_model"],
+                    "session_type": paths["session_type"],
+                    "camera_files": {
+                        view: str(paths["cameras"][view])
+                        for view in settings.image_names
+                    },
+                    "raw_resolution_m": processing.raw_resolution_m,
+                    "preliminary_pair": paths["pair"],
                     "preliminary_stereo_algorithm": (
                         processing.prelim_stereo_algorithm
                     ),
-                    "preliminary_cost_mode": (
-                        processing.prelim_cost_mode
-                    ),
-                    "preliminary_corr_kernel": (
-                        processing.prelim_corr_kernel
-                    ),
+                    "preliminary_cost_mode": processing.prelim_cost_mode,
+                    "preliminary_corr_kernel": processing.prelim_corr_kernel,
                     "preliminary_subpixel_kernel": (
                         processing.prelim_subpixel_kernel
                     ),
@@ -3401,38 +6022,28 @@ def run_pre_processing(
                     "preliminary_subpixel_mode": (
                         processing.prelim_subpixel_mode
                     ),
-                    "ba_prefix": str(
-                        paths["ba_prefix"]
-                    ),
-                    "preliminary_point_cloud": str(
-                        paths["prelim_point_cloud"]
-                    ),
-                    "preliminary_dem": str(
-                        paths["prelim_dem"]
-                    ),
-                    "alignment_transform": str(
-                        paths["align_transform"]
-                    ),
-                    "aligned_ba_prefix": str(
-                        paths["aligned_ba_prefix"]
-                    ),
+                    "ba_prefix": str(paths["ba_prefix"]),
+                    "preliminary_point_cloud": str(paths["prelim_point_cloud"]),
+                    "preliminary_dem": str(paths["prelim_dem"]),
+                    "alignment_transform": str(paths["align_transform"]),
+                    "aligned_ba_prefix": str(paths["aligned_ba_prefix"]),
                     "mapprojected_images": {
-                        view: str(
-                            paths["mapprojected"][view]
-                        )
-                        for view
-                        in settings.image_names
+                        view: str(paths["mapprojected"][view])
+                        for view in settings.image_names
                     },
                 },
             )
 
             if progress_callback:
-                progress_callback(
-                    100,
-                    "Pre-processing completed",
+                label = (
+                    "Pre-processing completed"
+                    if run_all
+                    else "Selected pre-processing step completed"
                 )
+                progress_callback(100, label)
 
             return {
+                "selected_stages": selected_stages,
                 "paths": paths,
                 "residual_summary": residual_summary,
                 "residual_csv": residual_csv,
@@ -3445,27 +6056,40 @@ def run_pre_processing(
                 "state_path": state_path,
             }
 
+        except WorkflowCancelled as exc:
+            summary.write("")
+            summary.write("STOPPED BY USER")
+            summary.write(str(exc))
+
+            if current_stage is not None:
+                emit(
+                    current_stage,
+                    "stopped",
+                    {
+                        "error": str(exc),
+                        "log": current_log,
+                    },
+                )
+
+            raise
+
         except Exception as exc:
             summary.write("")
             summary.write("ERROR")
-            summary.write(
-                traceback.format_exc()
-            )
+            summary.write(traceback.format_exc())
 
             if current_stage is not None:
                 emit(
                     current_stage,
                     "failed",
                     {
-                        "error": (
-                            f"{type(exc).__name__}: "
-                            f"{exc}"
-                        ),
+                        "error": f"{type(exc).__name__}: {exc}",
                         "log": current_log,
                     },
                 )
 
             raise
+
 
 
 # ============================================================
@@ -3603,15 +6227,15 @@ def _final_common_paths(
         ],
     )
 
-    for view in settings.image_names:
-        stem = pre_paths["images"][view].stem
-
-        _require_existing_files(
-            Path(
-                f"{pre_paths['aligned_ba_prefix']}-"
-                f"{stem}.adjust"
-            )
-        )
+    # Do not hard-code RPC-style A.adjust/B.adjust/C.adjust here.  Exact
+    # Pléiades DIM runs are named from the camera files and normally produce
+    # DIM_A/DIM_B/DIM_C adjustment (or adjusted-state) products.
+    _require_adjustments(
+        pre_paths["aligned_ba_prefix"],
+        pre_paths["images"],
+        settings.image_names,
+        pre_paths["cameras"],
+    )
 
     return pre_paths
 
@@ -3622,6 +6246,7 @@ def _configuration_views(tag: str):
 
 def _point_cloud_output(
     settings: ProjectSettings,
+    processing: PreProcessingSettings,
     final: FinalProcessingSettings,
     config_tag: str,
     ck: int,
@@ -3637,6 +6262,7 @@ def _point_cloud_output(
         f"{settings.project_name}_"
         f"{algorithm_file_tag}_"
         f"ck{ck}_sk{sk}"
+        f"{_camera_model_suffix(processing)}"
     )
 
     run_directory = (
@@ -3696,19 +6322,20 @@ def _run_one_final_configuration(
         for view in views
     ]
 
-    rpc_cameras = [
-        pre_paths["rpcs"][view]
+    cameras = [
+        pre_paths["cameras"][view]
         for view in views
     ]
 
     _require_existing_files(
         Path(processing.mapproject_dem),
         *map_images,
-        *rpc_cameras,
+        *cameras,
     )
 
     product_paths = _point_cloud_output(
         settings,
+        processing,
         final,
         config_tag,
         ck,
@@ -3727,7 +6354,7 @@ def _run_one_final_configuration(
         "parallel_stereo",
         [
             "-t",
-            "rpc",
+            pre_paths["session_type"],
             "--alignment-method",
             "none",
             "--stereo-algorithm",
@@ -3751,7 +6378,7 @@ def _run_one_final_configuration(
             "--bundle-adjust-prefix",
             pre_paths["aligned_ba_prefix"],
             *map_images,
-            *rpc_cameras,
+            *cameras,
             product_paths["run_prefix"],
             Path(processing.mapproject_dem),
         ],
@@ -3781,6 +6408,7 @@ def _run_one_final_configuration(
 
 def _merge_tri_point_clouds(
     settings: ProjectSettings,
+    processing: PreProcessingSettings,
     final: FinalProcessingSettings,
     pair_products: Sequence[dict],
     ck: int,
@@ -3810,6 +6438,7 @@ def _merge_tri_point_clouds(
         f"{settings.project_name}_"
         f"{algorithm_file_tag}_"
         f"ck{ck}_sk{sk}"
+        f"{_camera_model_suffix(processing)}"
     )
 
     merge_tag = "ABACBC"
@@ -3977,6 +6606,7 @@ def run_point_cloud_reconstruction(
                     merged_products.append(
                         _merge_tri_point_clouds(
                             settings,
+                            processing,
                             final,
                             products,
                             ck,
@@ -4034,6 +6664,8 @@ def run_point_cloud_reconstruction(
                     "stereo_mode": (
                         final.stereo_mode
                     ),
+                    "camera_model": pre_paths["camera_model"],
+                    "session_type": pre_paths["session_type"],
                     "algorithm": _resolve_final_algorithm(final)[
                         "display_name"
                     ],
@@ -4097,6 +6729,7 @@ def run_point_cloud_reconstruction(
 
 def _selected_point_clouds_for_dsm(
     settings: ProjectSettings,
+    processing: PreProcessingSettings,
     final: FinalProcessingSettings,
 ):
     """
@@ -4120,6 +6753,7 @@ def _selected_point_clouds_for_dsm(
             f"{settings.project_name}_"
             f"{algorithm_file_tag}_"
             f"ck{ck}_sk{sk}"
+            f"{_camera_model_suffix(processing)}"
         )
 
         if final.stereo_mode == "single":
@@ -4427,6 +7061,7 @@ def generate_final_dsms(
     point_clouds = (
         _selected_point_clouds_for_dsm(
             settings,
+            processing,
             final,
         )
     )
@@ -4722,12 +7357,24 @@ class FullProjectSetupUI(ProjectSetupUI):
         self.last_point_cloud = None
         self.last_final_dsm = None
 
+        # One controller owns the currently running long workflow task.
+        # Only one ASP-heavy task may run at a time; this prevents two runs
+        # from writing to the same output prefixes concurrently.
+        self._execution_control_groups = {}
+        self._execution_run_buttons = {}
+        self._execution_thread = None
+        self._active_execution_scope = None
+        self._pending_auto_final_dsm = False
+        self._execution_controller = ManagedProcessController(
+            state_callback=self._on_execution_controller_state
+        )
+
         # ----------------------------------------------------
         # PRE-PROCESSING INPUTS
         # ----------------------------------------------------
         self.alignment_dem = widgets.Text(
-            description="Alignment LiDAR DSM:",
-            placeholder="/path/to/LiDAR_DSM_1m.tif",
+            description="Alignment reference DEM:",
+            placeholder="/path/to/alignment_reference_DEM.tif",
             style=style,
             layout=wide,
         )
@@ -4803,8 +7450,8 @@ class FullProjectSetupUI(ProjectSetupUI):
         )
 
         self.reference_existing_alignment = widgets.Text(
-            description="Existing high-res DSM:",
-            placeholder="/path/to/high_resolution_alignment_DSM.tif",
+            description="Existing alignment DEM:",
+            placeholder="/path/to/alignment_reference_DEM.tif",
             style=style,
             layout=wide,
         )
@@ -4815,15 +7462,39 @@ class FullProjectSetupUI(ProjectSetupUI):
             indent=False,
         )
 
+        # Vertical-reference selectors remain fully editable.  The legacy
+        # reference_geoid_model name is retained for the alignment role so
+        # existing notebooks/scripts continue to work.
         self.reference_geoid_model = widgets.Dropdown(
             options=[],
-            description="Geoid model:",
+            description="Alignment geoid:",
             style=style,
             layout=widgets.Layout(width="690px"),
         )
 
+        self.reference_map_geoid_model = widgets.Dropdown(
+            options=[],
+            description="Map geoid:",
+            style=style,
+            layout=widgets.Layout(width="690px"),
+        )
+
+        self.reference_split_vertical_models = widgets.Checkbox(
+            value=False,
+            description="Use separate vertical references",
+            indent=False,
+            layout=widgets.Layout(width="420px"),
+        )
+
         self.reference_custom_n = widgets.Text(
-            description="Custom N raster:",
+            description="Alignment custom N:",
+            placeholder="/path/to/N_h_minus_H.tif",
+            style=style,
+            layout=wide,
+        )
+
+        self.reference_map_custom_n = widgets.Text(
+            description="Map custom N:",
             placeholder="/path/to/N_h_minus_H.tif",
             style=style,
             layout=wide,
@@ -4849,12 +7520,25 @@ class FullProjectSetupUI(ProjectSetupUI):
 
         self.reference_dem_box = widgets.VBox()
 
+        self.reference_dem_heading = widgets.HTML(
+            value=(
+                "<div style='"
+                "font-size:18px;"
+                "font-weight:700;"
+                "color:#17324d;"
+                "margin:12px 0 6px 0;"
+                "'>"
+                "Reference DEM settings"
+                "</div>"
+            )
+        )
+
         self.reference_dem_settings = widgets.Accordion(
             children=[self.reference_dem_box]
         )
         self.reference_dem_settings.set_title(
             0,
-            "Reference DEM settings",
+            "Show / hide settings",
         )
         self.reference_dem_settings.selected_index = 0
 
@@ -4894,18 +7578,77 @@ class FullProjectSetupUI(ProjectSetupUI):
         self.reference_dem_qc_tabs.set_title(1, "Map-projection DEM")
         self.reference_dem_qc_tabs.set_title(2, "Geoid / Vertical")
         self.reference_dem_qc_tabs.layout.display = "none"
+        self.section_hierarchy_style = widgets.HTML(
+            value=(
+                "<style>"
+                ".widget-accordion .p-Accordion-header, "
+                ".widget-accordion .p-Accordion-headerLabel, "
+                ".widget-accordion .p-Accordion-header-link, "
+                ".jupyter-widgets.widget-accordion .p-Accordion-header, "
+                ".jupyter-widgets.widget-accordion .p-Accordion-headerLabel, "
+                ".jupyter-widgets.widget-accordion .p-Accordion-header-link, "
+                ".lm-AccordionPanel-title, "
+                ".lm-AccordionPanel-titleLabel {"
+                "font-size:30px !important;"
+                "font-weight:700 !important;"
+                "line-height:1.5 !important;"
+                "}"
+                "</style>"
+            )
+        )
+
+
         self.reference_dem_gate_note = widgets.HTML(
             value=(
                 "<div style='margin:5px 0 10px 0;padding:8px 10px;"
                 "border-left:3px solid #336699;background:#f7f9fc;"
                 "color:#555;max-width:850px;font-size:12px;line-height:1.45;'>"
-                "<b>QC gate:</b> ASP has not started yet. Inspect the Alignment DEM, Map-projection DEM, and Geoid / Vertical tabs. "
+                "<b>QC gate:</b> ASP has not started yet. Each prepared-reference tab keeps its "
+                "<b>QC figure + bordered numerical table</b>. Inspect the Alignment DEM, "
+                "Map-projection DEM, and Geoid / Vertical tabs. "
                 "Only then run step 2. If a DEM is wrong, change the reference "
                 "settings and prepare again."
                 "</div>"
             )
         )
         self._reference_dem_ready = False
+
+        # Keep the complete Reference DEM workflow inside one collapsible section:
+        # controls, preparation status, execution controls, progress, QC gate,
+        # and all QC figure/table tabs disappear together when the section is hidden.
+        self.reference_dem_section_content = widgets.VBox([
+            self.reference_dem_box,
+            self.reference_dem_status,
+            self.prepare_reference_dems,
+            self.reference_dem_progress,
+            self.reference_dem_progress_text,
+            self.reference_dem_gate_note,
+            self.reference_dem_qc_tabs,
+        ])
+        self.reference_dem_settings.children = (self.reference_dem_section_content,)
+        self.reference_dem_settings.set_title(0, "Reference DEM settings — show / hide")
+
+        self.camera_model = widgets.Dropdown(
+            options=[
+                ("RPC — RPC XML (default)", "rpc"),
+                ("Pléiades exact linescan — DIM XML", "pleiades"),
+            ],
+            value="rpc",
+            description="Camera model:",
+            style=style,
+            layout=widgets.Layout(width="520px"),
+        )
+
+        self.final_camera_model = widgets.Dropdown(
+            options=self.camera_model.options,
+            value="rpc",
+            description="Camera model:",
+            style=style,
+            disabled=True,
+            layout=widgets.Layout(width="520px"),
+        )
+
+        self.camera_model_note = widgets.HTML()
 
         self.target_epsg = widgets.IntText(
             value=32632,
@@ -4939,16 +7682,30 @@ class FullProjectSetupUI(ProjectSetupUI):
             style=style,
         )
 
-        self.ba_robust_threshold = widgets.FloatText(
-            value=2.0,
-            description="BA robust threshold:",
+        self.ba_cost_function = widgets.Combobox(
+            options=["Cauchy", "PseudoHuber", "Huber", "L1", "L2"],
+            value="Cauchy",
+            ensure_option=False,
+            placeholder="Leave blank = ASP default (Cauchy), or type a custom ASP value",
+            description="BA cost function:",
             style=style,
+            layout=widgets.Layout(width="620px"),
         )
 
-        self.ba_max_iterations = widgets.IntText(
-            value=500,
+        self.ba_robust_threshold = widgets.Text(
+            value="2.0",
+            placeholder="Leave blank = ASP default (0.5)",
+            description="BA robust threshold:",
+            style=style,
+            layout=widgets.Layout(width="620px"),
+        )
+
+        self.ba_max_iterations = widgets.Text(
+            value="500",
+            placeholder="Leave blank = ASP default (1000)",
             description="BA max iterations:",
             style=style,
+            layout=widgets.Layout(width="620px"),
         )
 
         # ----------------------------------------------------
@@ -5039,11 +7796,75 @@ class FullProjectSetupUI(ProjectSetupUI):
             )
         )
 
-        self.processing_threads = widgets.IntText(
-            value=18,
-            description="Map/camera threads:",
+        self.prelim_dem_resolution = widgets.FloatText(
+            value=1.0,
+            description="Prelim DSM resolution:",
             style=style,
         )
+
+        self.prelim_dem_nodata = widgets.FloatText(
+            value=-9999.0,
+            description="Prelim DSM nodata:",
+            style=style,
+        )
+
+        self.mapproject_threads = widgets.IntText(
+            value=18,
+            description="Mapproject threads:",
+            style=style,
+        )
+
+        self.run_camera_test = widgets.Button(
+            description="Compare RPC vs DIM (cam_test)",
+            button_style="info",
+            icon="exchange-alt",
+            layout=widgets.Layout(width="300px", height="38px"),
+        )
+        self.camera_test_execution_controls = self._make_execution_controls(
+            "camera_test", self.run_camera_test, "DIM vs RPC comparison"
+        )
+        self.camera_test_summary = widgets.HTML()
+        self.camera_test_summary_details = widgets.Accordion(children=[self.camera_test_summary])
+        self.camera_test_summary_details.set_title(0, "Run details / processing summary")
+        self.camera_test_summary_details.selected_index = None
+        self.camera_test_output = widgets.HTML(
+            value="<div style='padding:10px 0;color:#777;'>No comparison results yet.</div>",
+            layout=widgets.Layout(width="100%")
+        )
+
+        self.camera_comparison_panel = widgets.VBox([
+            widgets.HTML(
+                "<div style='margin:8px 0 10px 0;padding:10px 12px;"
+                "border-left:4px solid #7b5fa6;background:#faf8ff;'>"
+                "<div style='font-size:16px;font-weight:700;color:#3b2d55;margin-bottom:3px;'>"
+                "Compared geometry — exact DIM vs RPC</div>"
+                "<span style='color:#666;font-size:12px;'>"
+                "Runs ASP <code>cam_test</code> on each normalized full image using the "
+                "same command structure as the external comparison script: DIM exact camera "
+                "as cam1 and RPC as cam2. No height or sampling override is imposed by the workflow."
+                "</span></div>"
+            ),
+            self.camera_test_execution_controls,
+            widgets.HTML(
+                "<div style='margin:10px 0;padding:10px 12px;"
+                "border-left:4px solid #d28b00;background:#fffaf0;"
+                "font-size:12px;line-height:1.5;'>"
+                "<b>Interpretation note:</b> Large DIM–RPC pixel discrepancies mean "
+                "the RPC approximation does not reproduce the exact line-scan geometry well; "
+                "for accuracy-sensitive processing, prefer the DIM camera. When discrepancies "
+                "are small, RPC is usually the simpler and faster practical choice. "
+                "There is no universal pixel threshold: interpret the values relative to "
+                "image resolution, terrain relief, and the required DSM accuracy."
+                "</div>"
+            ),
+            self.camera_test_summary_details,
+            widgets.HTML(
+                "<div style='margin:12px 0 6px 0;padding:8px 10px;"
+                "border-bottom:2px solid #7b5fa6;font-size:14px;font-weight:700;'>"
+                "Comparison results — numerical table + figure</div>"
+            ),
+            self.camera_test_output,
+        ])
 
         self.target_epsg_row = self._row(
             self.target_epsg,
@@ -5102,7 +7923,18 @@ class FullProjectSetupUI(ProjectSetupUI):
         )
 
         self.preprocess_advanced_box = widgets.VBox()
-
+        self.preprocess_advanced_heading = widgets.HTML(
+            value=(
+                "<div style='"
+                "font-size:18px;"
+                "font-weight:700;"
+                "color:#17324d;"
+                "margin:12px 0 6px 0;"
+                "'>"
+                "Advanced pre-processing settings"
+                "</div>"
+            )
+        )
         self.preprocess_advanced = (
             widgets.Accordion(
                 children=[
@@ -5113,7 +7945,7 @@ class FullProjectSetupUI(ProjectSetupUI):
 
         self.preprocess_advanced.set_title(
             0,
-            "Advanced pre-processing settings",
+            "Show / hide settings",
         )
 
         self.run_preprocessing = widgets.Button(
@@ -5122,6 +7954,9 @@ class FullProjectSetupUI(ProjectSetupUI):
             icon="cogs",
             disabled=True,
             layout=widgets.Layout(width="290px", height="42px"),
+        )
+        self.preprocess_execution_controls = self._make_execution_controls(
+            "preprocessing", self.run_preprocessing, "ASP pre-processing"
         )
 
         self.preprocess_progress = (
@@ -5147,6 +7982,9 @@ class FullProjectSetupUI(ProjectSetupUI):
         )
 
         self.preprocess_summary = widgets.HTML()
+        self.preprocess_summary_details = widgets.Accordion(children=[self.preprocess_summary])
+        self.preprocess_summary_details.set_title(0, "Run details / processing summary")
+        self.preprocess_summary_details.selected_index = None
 
         self._preprocess_stage_order = [
             "bundle_adjustment",
@@ -5161,24 +7999,86 @@ class FullProjectSetupUI(ProjectSetupUI):
             "bundle_adjustment": "Bundle adjustment",
             "preliminary_stereo": "Prelim stereo",
             "preliminary_dem": "Prelim DSM",
-            "lidar_alignment": "LiDAR alignment",
+            "lidar_alignment": "Reference alignment",
             "camera_transform": "Camera transform",
             "map_projection": "Map projection",
+        }
+
+        self.preprocess_run_mode = widgets.ToggleButtons(
+            options=[
+                ("Run all pre-processing", "all"),
+                ("Run one step", "single"),
+            ],
+            value="all",
+            description="Run mode:",
+            style=style,
+        )
+
+        self.preprocess_single_stage = widgets.Dropdown(
+            options=[
+                (self._preprocess_stage_labels[stage], stage)
+                for stage in self._preprocess_stage_order
+            ],
+            value="bundle_adjustment",
+            description="Step:",
+            style=style,
+            disabled=True,
+        )
+
+        self.preprocess_run_note = widgets.HTML(
+            "<div style='margin:4px 0 8px 205px;color:#666;max-width:760px;"
+            "font-size:12px;line-height:1.45;'>"
+            "<b>Default:</b> run the complete six-step chain. Switch to "
+            "<b>Run one step</b> to reuse successful prerequisite outputs already present on disk; "
+            "the prerequisite does not need to have been run again in the current notebook session. "
+            "Earlier successful step results remain visible. "
+            "If a failed step left partial files, enable <b>Overwrite existing outputs</b> "
+            "before rerunning that step.<br><b>Important:</b> changing an upstream "
+            "step does not automatically rebuild downstream products; rerun any "
+            "dependent downstream steps that must reflect the new result.<br>"
+            "<b>Execution controls:</b> Pause/Resume continues the same active ASP "
+            "process on Linux/POSIX; Stop cancels the active process tree. After Stop, "
+            "the Run button is restored so the selected step can be started again."
+            "</div>"
+        )
+
+        # Text/tables are rendered through direct HTML widgets rather than
+        # IPython display capture. This is robust when ASP runs in the managed
+        # background worker (Output widgets can otherwise appear blank even
+        # though the stage completed successfully). Rich figures still use a
+        # small Output widget below the HTML content.
+        self._preprocess_stage_html = {
+            stage: widgets.HTML(
+                "<div style='padding:12px;color:#777;'>Waiting for this processing step.</div>"
+            )
+            for stage in self._preprocess_stage_order
         }
 
         self._preprocess_stage_outputs = {
             stage: widgets.Output(
                 layout=widgets.Layout(
                     width="100%",
-                    min_height="120px",
+                    min_height="0px",
                 )
             )
             for stage in self._preprocess_stage_order
         }
 
+        self._preprocess_stage_containers = {
+            stage: widgets.VBox([
+                self._preprocess_stage_html[stage],
+                self._preprocess_stage_outputs[stage],
+            ])
+            for stage in self._preprocess_stage_order
+        }
+
+        self._preprocess_stage_status = {
+            stage: "waiting" for stage in self._preprocess_stage_order
+        }
+
         self.preprocess_stage_tabs = widgets.Tab(
             children=[
-                self._preprocess_stage_outputs[stage]
+                self._preprocess_stage_containers[stage]
                 for stage in self._preprocess_stage_order
             ]
         )
@@ -5389,6 +8289,9 @@ class FullProjectSetupUI(ProjectSetupUI):
                 height="42px",
             ),
         )
+        self.point_cloud_execution_controls = self._make_execution_controls(
+            "point_cloud", self.run_point_cloud, "Point-cloud reconstruction"
+        )
 
         self.point_cloud_progress = (
             widgets.IntProgress(
@@ -5413,6 +8316,9 @@ class FullProjectSetupUI(ProjectSetupUI):
         )
 
         self.point_cloud_summary = widgets.HTML()
+        self.point_cloud_summary_details = widgets.Accordion(children=[self.point_cloud_summary])
+        self.point_cloud_summary_details.set_title(0, "Run details / processing summary")
+        self.point_cloud_summary_details.selected_index = None
         self.point_cloud_results = widgets.VBox()
 
         # ----------------------------------------------------
@@ -5461,6 +8367,12 @@ class FullProjectSetupUI(ProjectSetupUI):
                 children=[
                     widgets.VBox(
                         [
+                            self._row(
+                                self.final_camera_model,
+                                "Inherited from ASP pre-processing. The same camera model/session "
+                                "and XML files are reused by final parallel_stereo; this value "
+                                "cannot be changed independently.",
+                            ),
                             self._row(
                                 self.custom_cost_mode,
                                 "Automatically set to 2 for BM and 4 for "
@@ -5518,6 +8430,9 @@ class FullProjectSetupUI(ProjectSetupUI):
                 height="42px",
             ),
         )
+        self.final_dsm_execution_controls = self._make_execution_controls(
+            "final_dsm", self.run_final_dsm, "Final DSM generation"
+        )
 
         self.final_dsm_progress = (
             widgets.IntProgress(
@@ -5542,36 +8457,48 @@ class FullProjectSetupUI(ProjectSetupUI):
         )
 
         self.final_dsm_summary = widgets.HTML()
+        self.final_dsm_summary_details = widgets.Accordion(children=[self.final_dsm_summary])
+        self.final_dsm_summary_details.set_title(0, "Run details / processing summary")
+        self.final_dsm_summary_details.selected_index = None
         self.final_dsm_results = widgets.VBox()
+
+        # ----------------------------------------------------
+        # OPTIONAL CO-REGISTRATION HANDOFF
+        # ----------------------------------------------------
+        self.open_coregistration_notebook = widgets.Button(
+            description="Open optional co-registration notebook",
+            button_style="info",
+            icon="external-link",
+            layout=widgets.Layout(width="330px", height="42px"),
+        )
+        self.coregistration_status = widgets.HTML(
+            "<span style='color:#666;font-size:12px;'>Co-registration is an optional post-processing step outside ASP.</span>"
+        )
+        self.coregistration_output = widgets.Output()
 
         # ----------------------------------------------------
         # HELP ROWS
         # ----------------------------------------------------
         preprocessing_rows = [
+            self.section_hierarchy_style,
+            self.reference_dem_heading,
             self.reference_dem_settings,
-            self.reference_dem_status,
-            self.prepare_reference_dems,
-            self.reference_dem_progress,
-            self.reference_dem_progress_text,
-            self.reference_dem_gate_note,
-            self.reference_dem_qc_tabs,
             widgets.HTML(
                 "<hr style='margin:14px 0 12px 0;'>"
-                "<b>ASP pre-processing settings</b>"
+                "<div style='font-size:18px;font-weight:700;color:#17324d;"
+                "margin:12px 0 8px 0;'>ASP pre-processing execution</div>"
             ),
             self._row(
-                self.map_resolution,
-                "Mapproject image resolution. "
-                "The tested Pléiades value is 0.5 m. "
-                "This is the image projection resolution, not the "
-                "reference DEM resolution configured above.",
+                self.preprocess_run_mode,
+                "Run the complete chain by default, or rerun only one selected "
+                "stage while reusing successful prerequisite outputs on disk.",
             ),
             self._row(
-                self.preliminary_pair,
-                "Pair used to build the preliminary DSM "
-                "for absolute high-resolution reference alignment. "
-                "The tested tri-stereo workflow uses AC.",
+                self.preprocess_single_stage,
+                "Enabled in Run one step mode. Select the exact failed or "
+                "experimental stage you want to execute.",
             ),
+            self.preprocess_run_note,
         ]
 
         self.final_mode_row = self._row(
@@ -5689,6 +8616,19 @@ class FullProjectSetupUI(ProjectSetupUI):
             self._on_pre_processing
         )
 
+        self.run_camera_test.on_click(
+            self._on_camera_test
+        )
+
+        self.preprocess_run_mode.observe(
+            self._on_preprocess_run_mode_change,
+            names="value",
+        )
+        self.preprocess_single_stage.observe(
+            self._on_preprocess_single_stage_change,
+            names="value",
+        )
+
         self.run_point_cloud.on_click(
             self._on_point_cloud
         )
@@ -5696,9 +8636,27 @@ class FullProjectSetupUI(ProjectSetupUI):
         self.run_final_dsm.on_click(
             self._on_final_dsm
         )
+        self.open_coregistration_notebook.on_click(
+            self._on_open_coregistration_notebook
+        )
 
         # Preliminary-stereo controls are independent from the final stereo
         # controls. They only affect the preliminary alignment stereo run.
+        self.camera_model.observe(
+            self._on_camera_model_change,
+            names="value",
+        )
+
+        self.platform.observe(
+            self._on_camera_model_context_change,
+            names="value",
+        )
+
+        self.crop_enabled.observe(
+            self._on_camera_model_context_change,
+            names="value",
+        )
+
         self.prelim_algorithm.observe(
             self._on_prelim_algorithm_change,
             names="value",
@@ -5748,11 +8706,23 @@ class FullProjectSetupUI(ProjectSetupUI):
             names="value",
         )
         self.reference_alignment_source.observe(
-            self._rebuild_reference_dem_controls,
+            self._on_reference_alignment_source_change,
+            names="value",
+        )
+        self.reference_alignment_resolution.observe(
+            self._sync_prelim_dem_resolution_from_alignment,
             names="value",
         )
         self.reference_geoid_model.observe(
+            self._on_reference_alignment_geoid_change,
+            names="value",
+        )
+        self.reference_map_geoid_model.observe(
             self._rebuild_reference_dem_controls,
+            names="value",
+        )
+        self.reference_split_vertical_models.observe(
+            self._on_reference_split_vertical_change,
             names="value",
         )
         self.reference_existing_map_convert.observe(
@@ -5770,7 +8740,9 @@ class FullProjectSetupUI(ProjectSetupUI):
             self.reference_existing_map_convert, self.reference_alignment_source,
             self.reference_alignment_resolution, self.reference_existing_alignment,
             self.reference_existing_alignment_convert, self.reference_geoid_model,
-            self.reference_custom_n, self.reference_global_buffer,
+            self.reference_map_geoid_model, self.reference_split_vertical_models,
+            self.reference_custom_n,
+            self.reference_map_custom_n, self.reference_global_buffer,
             self.reference_ign_buffer, self.reference_ign_workers, self.target_epsg,
         ):
             _ref_widget.observe(
@@ -5778,6 +8750,10 @@ class FullProjectSetupUI(ProjectSetupUI):
             )
 
         self._configure_reference_dem_controls()
+        self._sync_prelim_dem_resolution_from_alignment()
+
+        # Initialize shared camera-model controls first.
+        self._sync_camera_model_controls()
 
         # Initialize advanced preliminary-stereo controls first.
         self._apply_prelim_algorithm_selection()
@@ -5792,62 +8768,568 @@ class FullProjectSetupUI(ProjectSetupUI):
         # APPEND TO THE ORIGINAL v0.5 CONTAINER
         # ----------------------------------------------------
         extra_children = [
-            widgets.HTML(
-                "<hr><h4>Pre-processing</h4>"
-                "<div style='color:#666;margin-bottom:8px;'>"
-                "First prepare and visually check the alignment and map-projection "
-                "reference DEMs. ASP then runs: bundle adjustment → preliminary "
-                "stereo → preliminary DSM → LiDAR alignment → apply transform "
-                "to cameras → map projection."
-                "</div>"
-            ),
+            widgets.HTML("<hr><div style='margin:12px 0 10px 0;padding:12px 14px;border-left:6px solid #1976d2;background:#eef5fb;border-radius:3px;'><div style='font-size:24px;font-weight:700;color:#17324d;'>Pre-processing</div><div style='color:#5f6b76;font-size:13px;margin-top:5px;line-height:1.5;'>Prepare and visually check the alignment and map-projection references, then run bundle adjustment → preliminary stereo → preliminary DSM → reference alignment → camera transform → map projection.</div></div>"),
             *preprocessing_rows,
             self.preprocess_advanced,
             widgets.HTML("<br>"),
-            self.run_preprocessing,
+            self.preprocess_execution_controls,
             self.preprocess_progress,
             self.preprocess_progress_text,
-            self.preprocess_summary,
+            self.preprocess_summary_details,
             self.preprocess_results,
 
-            widgets.HTML(
-                "<hr><h4>Point cloud</h4>"
-                "<div style='color:#666;margin-bottom:8px;'>"
-                "Run the selected final stereo geometry with "
-                "parallel_stereo. In Tri mode, AB, AC and BC "
-                "are merged with pc_merge."
-                "</div>"
-            ),
+            widgets.HTML("<hr><div style='margin:12px 0 10px 0;padding:12px 14px;border-left:6px solid #1976d2;background:#eef5fb;border-radius:3px;'><div style='font-size:20px;font-weight:700;color:#17324d;'>Point cloud</div><div style='color:#5f6b76;font-size:13px;margin-top:5px;line-height:1.5;'>Run the selected final stereo geometry with parallel_stereo. In Tri mode, AB, AC and BC are merged with pc_merge.</div></div>"),
             self.point_cloud_controls_box,
             self.final_advanced,
             widgets.HTML("<br>"),
-            self.run_point_cloud,
+            self.point_cloud_execution_controls,
             self.point_cloud_progress,
             self.point_cloud_progress_text,
-            self.point_cloud_summary,
+            self.point_cloud_summary_details,
             self.point_cloud_results,
 
-            widgets.HTML(
-                "<hr><h4>Final DSM</h4>"
-                "<div style='color:#666;margin-bottom:8px;'>"
-                "Rasterize the selected point cloud(s) with "
-                "point2dem. This can be rerun without repeating "
-                "the expensive stereo correlation."
-                "</div>"
-            ),
+            widgets.HTML("<hr><div style='margin:12px 0 10px 0;padding:12px 14px;border-left:6px solid #1976d2;background:#eef5fb;border-radius:3px;'><div style='font-size:20px;font-weight:700;color:#17324d;'>Final DSM</div><div style='color:#5f6b76;font-size:13px;margin-top:5px;line-height:1.5;'>Rasterize the selected point cloud(s) with point2dem. This can be rerun without repeating the expensive stereo correlation.</div></div>"),
             *final_dsm_rows,
             widgets.HTML("<br>"),
-            self.run_final_dsm,
+            self.final_dsm_execution_controls,
             self.final_dsm_progress,
             self.final_dsm_progress_text,
-            self.final_dsm_summary,
+            self.final_dsm_summary_details,
             self.final_dsm_results,
+
+            widgets.HTML("<hr><div style='margin:12px 0 10px 0;padding:12px 14px;border-left:6px solid #6a3d9a;background:#f7f2fb;border-radius:3px;'><div style='font-size:20px;font-weight:700;color:#4a2768;'>6. Optional co-registration</div><div style='color:#5f6b76;font-size:13px;margin-top:5px;line-height:1.5;'>Co-registration is intentionally kept outside ASP as the final optional workflow step. Open the supplied xDEM notebook only when an external reference/stable-area correction is required.</div></div>"),
+            self.open_coregistration_notebook,
+            self.coregistration_status,
+            self.coregistration_output,
+
+            widgets.HTML("<hr><div style='margin:12px 0 10px 0;padding:12px 14px;border-left:6px solid #1976d2;background:#eef5fb;border-radius:3px;'><div style='font-size:20px;font-weight:700;color:#17324d;'>Runtime summary</div><div style='color:#5f6b76;font-size:13px;margin-top:5px;line-height:1.5;'>Wall-clock runtime is recorded automatically when each workflow stage completes. Rerunning a stage updates the same row, so the table always represents the latest successful run of each step.</div></div>"),
+            self.runtime_summary_table,
+            self.runtime_summary_path,
         ]
 
         self.container.children = tuple(
             list(self.container.children)
             + extra_children
         )
+
+        # Base-class startup may already have restored the last project inputs.
+        # Once the full processing controls exist, restore reusable reference/
+        # processing paths as well so the user can continue directly.
+        if self.existing_project_dir.value.strip():
+            try:
+                _loaded = load_project_config(self.existing_project_dir.value.strip())
+                self._restore_processing_state_from_project(_loaded)
+            except Exception:
+                pass
+
+    def _clear_downstream_project_state(self):
+        """Clear project-specific downstream UI state without running ASP."""
+        from IPython.display import clear_output
+
+        self._reference_dem_ready = False
+
+        # A new-project reset must also clear the complete reference-DEM panel,
+        # not only the resolved paths consumed by ASP.  Keep the scientific
+        # defaults, but remove every project-specific AOI/path/QC result.
+        if hasattr(self, "reference_region"):
+            self._updating_reference_controls = True
+            try:
+                self.reference_region.value = "france"
+                self.reference_aoi.value = ""
+                self.reference_existing_map.value = ""
+                self.reference_existing_alignment.value = ""
+                self.reference_existing_map_convert.value = False
+                self.reference_existing_alignment_convert.value = False
+                self.reference_split_vertical_models.value = False
+                self.reference_custom_n.value = ""
+                self.reference_map_custom_n.value = ""
+                self.reference_global_buffer.value = 0.05
+                self.reference_ign_buffer.value = 1000.0
+                self.reference_ign_workers.value = 2
+                # Explicitly restore the scientific defaults as well as clearing
+                # project-specific paths.  This prevents a loaded project's DEM
+                # source/resolution/geoid choices from surviving Start new project.
+                self.reference_map_source.options = self._reference_map_source_options()
+                self.reference_alignment_source.options = self._reference_alignment_source_options()
+                model_options = self._reference_geoid_options()
+                self.reference_geoid_model.options = model_options
+                self.reference_map_geoid_model.options = model_options
+                self.reference_alignment_source.value = "ign"
+                self.reference_alignment_resolution.value = 1.0
+                self.reference_map_source.value = "ign"
+                self.reference_map_resolution.value = 50.0
+                self.reference_geoid_model.value = "raf20"
+                self.reference_map_geoid_model.value = "raf20"
+            finally:
+                self._updating_reference_controls = False
+            self._rebuild_reference_dem_controls()
+
+        if hasattr(self, "alignment_dem"):
+            self.alignment_dem.value = ""
+        if hasattr(self, "mapproject_dem"):
+            self.mapproject_dem.value = ""
+        if hasattr(self, "reference_dem_status"):
+            self.reference_dem_status.value = (
+                "<span style='color:#666;font-size:12px;'>No reference DEM prepared for the new project.</span>"
+            )
+        if hasattr(self, "reference_dem_progress"):
+            self.reference_dem_progress.value = 0
+            self.reference_dem_progress.bar_style = ""
+        if hasattr(self, "reference_dem_progress_text"):
+            self.reference_dem_progress_text.value = "<span style='color:#666;'>Waiting.</span>"
+        if hasattr(self, "reference_dem_qc_outputs"):
+            for output in self.reference_dem_qc_outputs.values():
+                with output:
+                    clear_output(wait=False)
+        if hasattr(self, "reference_dem_qc_tabs"):
+            self.reference_dem_qc_tabs.layout.display = "none"
+            self.reference_dem_qc_tabs.selected_index = 0
+
+        if hasattr(self, "preprocess_summary"):
+            self.preprocess_summary.value = ""
+            self.preprocess_summary_details.selected_index = None
+            self.preprocess_progress.value = 0
+            self.preprocess_progress.bar_style = ""
+            self.preprocess_progress_text.value = "<span style='color:#666;'>Waiting.</span>"
+            self._reset_preprocess_stage_tabs(self._preprocess_stage_order)
+
+        for summary_name, details_name, progress_name in (
+            ("point_cloud_summary", "point_cloud_summary_details", "point_cloud_progress"),
+            ("final_dsm_summary", "final_dsm_summary_details", "final_dsm_progress"),
+        ):
+            summary = getattr(self, summary_name, None)
+            if summary is not None:
+                summary.value = ""
+            details = getattr(self, details_name, None)
+            if details is not None:
+                details.selected_index = None
+            progress = getattr(self, progress_name, None)
+            if progress is not None:
+                progress.value = 0
+                progress.bar_style = ""
+
+        if hasattr(self, "point_cloud_results"):
+            self.point_cloud_results.children = ()
+        if hasattr(self, "final_dsm_results"):
+            self.final_dsm_results.children = ()
+        if hasattr(self, "coregistration_status"):
+            self.coregistration_status.value = ""
+        if hasattr(self, "coregistration_output"):
+            self.coregistration_output.clear_output()
+
+        self.last_pre_processing = None
+        self.last_point_cloud = None
+        self.last_final_dsm = None
+        self._refresh_preprocess_run_button_state()
+
+    def _restore_processing_state_from_project(self, settings):
+        """Restore reusable paths, controls, QC previews, and result panels.
+
+        Loading a project never reruns ASP. Existing products are detected on
+        disk and their saved tables/previews are displayed again so reopening
+        the notebook behaves as a true resume rather than a blank session.
+        """
+        settings = settings if isinstance(settings, ProjectSettings) else load_project_config(settings)
+        state = {}
+        ref = {}
+        self._updating_reference_controls = True
+        try:
+            processing_state_path = settings.project_dir / "processing_state.json"
+            if processing_state_path.is_file():
+                try:
+                    state = json.loads(processing_state_path.read_text(encoding="utf-8"))
+                except Exception:
+                    state = {}
+
+            pre = state.get("pre_processing", {}) if isinstance(state, dict) else {}
+            if pre:
+                if pre.get("camera_model") in {"rpc", "pleiades"}:
+                    self.camera_model.value = pre["camera_model"]
+                if pre.get("target_epsg") not in (None, ""):
+                    self.target_epsg.value = int(pre["target_epsg"])
+                if pre.get("raw_resolution_m") not in (None, ""):
+                    self.map_resolution.value = float(pre["raw_resolution_m"])
+                if pre.get("preliminary_pair"):
+                    self.preliminary_pair.value = str(pre["preliminary_pair"])
+
+            ref_config_path = settings.project_dir / "reference_dems" / "reference_dem_config.json"
+            if ref_config_path.is_file():
+                try:
+                    ref = json.loads(ref_config_path.read_text(encoding="utf-8"))
+                except Exception:
+                    ref = {}
+
+            # Restore the reference selectors sufficiently for their QC labels
+            # to describe the actual saved reference configuration.
+            if ref:
+                region = str(ref.get("region") or "").strip()
+                region_values = [item[1] if isinstance(item, tuple) else item for item in self.reference_region.options]
+                if region in region_values:
+                    self.reference_region.value = region
+
+                self.reference_map_source.options = self._reference_map_source_options()
+                self.reference_alignment_source.options = self._reference_alignment_source_options()
+                self.reference_geoid_model.options = self._reference_geoid_options()
+                self.reference_map_geoid_model.options = self._reference_geoid_options()
+
+                def _set_if_available(widget, value):
+                    values = [item[1] if isinstance(item, tuple) else item for item in widget.options]
+                    if value in values:
+                        widget.value = value
+
+                _set_if_available(self.reference_alignment_source, ref.get("alignment_source"))
+                _set_if_available(self.reference_map_source, ref.get("map_source"))
+                _set_if_available(self.reference_geoid_model, ref.get("alignment_geoid_model") or ref.get("geoid_model"))
+                _set_if_available(self.reference_map_geoid_model, ref.get("map_geoid_model") or ref.get("geoid_model"))
+
+                if ref.get("alignment_resolution_m") not in (None, ""):
+                    self.reference_alignment_resolution.value = float(ref["alignment_resolution_m"])
+                if ref.get("map_resolution_m") not in (None, ""):
+                    self.reference_map_resolution.value = float(ref["map_resolution_m"])
+                if ref.get("target_epsg") not in (None, ""):
+                    self.target_epsg.value = int(ref["target_epsg"])
+
+            alignment = str(ref.get("alignment_dem") or pre.get("alignment_dem") or "").strip()
+            map_dem = str(ref.get("mapproject_dem") or pre.get("mapproject_dem") or "").strip()
+
+            if alignment:
+                self.alignment_dem.value = alignment
+            if map_dem:
+                self.mapproject_dem.value = map_dem
+
+            alignment_ok = bool(alignment) and Path(alignment).expanduser().is_file()
+            map_ok = bool(map_dem) and Path(map_dem).expanduser().is_file()
+            self._reference_dem_ready = alignment_ok and map_ok
+
+            if self._reference_dem_ready:
+                self.reference_dem_status.value = (
+                    "<div style='margin:6px 0 9px 0;padding:9px 11px;"
+                    "border-left:4px solid #2e7d32;background:#f4fbf4;"
+                    "color:#444;font-size:12px;line-height:1.5;'>"
+                    "<b>✓ Existing reference DEMs detected and reused.</b><br>"
+                    f"<b>Alignment reference:</b> <code>{html.escape(alignment)}</code><br>"
+                    f"<b>Map-projection reference:</b> <code>{html.escape(map_dem)}</code><br>"
+                    "Saved QC/results are restored below; no reference preparation is rerun."
+                    "</div>"
+                )
+            elif alignment or map_dem:
+                self.reference_dem_status.value = (
+                    "<div style='margin:6px 0 9px 0;padding:9px 11px;"
+                    "border-left:4px solid #d28b00;background:#fffaf0;color:#555;font-size:12px;'>"
+                    "A previous reference configuration was found, but one or more resolved DEM files "
+                    "are missing. Prepare/select the references again before the stages that require them."
+                    "</div>"
+                )
+        finally:
+            self._updating_reference_controls = False
+
+        # Re-display the reference DEM QC from the already prepared rasters.
+        if self._reference_dem_ready:
+            try:
+                qc_result = dict(ref)
+                qc_result["alignment_dem"] = str(self.alignment_dem.value)
+                qc_result["mapproject_dem"] = str(self.mapproject_dem.value)
+                qc_result["alignment_n"] = ref.get("alignment_geoid_model_raster")
+                qc_result["map_n"] = ref.get("map_geoid_model_raster")
+                qc = self._render_reference_dem_qc(settings, qc_result)
+                for payload in qc.values():
+                    if payload is not None and payload.get("figure") is not None:
+                        plt.close(payload["figure"])
+                self.reference_dem_progress.value = 100
+                self.reference_dem_progress.bar_style = "success"
+                self.reference_dem_progress_text.value = (
+                    "<span style='color:#2e7d32;'>Existing reference DEM QC restored.</span>"
+                )
+            except Exception as exc:
+                self.reference_dem_progress_text.value = (
+                    "<span style='color:#8a5a00;'>Reference DEM files were restored, but the QC preview could not be rebuilt: "
+                    + html.escape(type(exc).__name__ + ": " + str(exc)) + "</span>"
+                )
+
+        self._restore_existing_processing_result_panels(settings, state)
+        self._sync_camera_model_controls()
+        self._refresh_preprocess_run_button_state()
+        self._refresh_resume_project_status(settings)
+
+    def _restore_existing_processing_result_panels(self, settings, state):
+        """Show existing pre/post-processing outputs without rerunning commands."""
+        from IPython.display import clear_output
+
+        def _img_html(path, title):
+            path = Path(path)
+            if not path.is_file():
+                return ""
+            try:
+                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+                return (
+                    "<div style='margin-top:12px;'>"
+                    f"<div style='font-size:13px;font-weight:700;margin-bottom:7px;'>{html.escape(title)}</div>"
+                    f"<img src='data:image/png;base64,{encoded}' style='max-width:100%;height:auto;"
+                    "border:1px solid #cfd6df;background:white;'/></div>"
+                )
+            except Exception:
+                return ""
+
+        pre = state.get("pre_processing", {}) if isinstance(state, dict) else {}
+        if pre:
+            try:
+                base_processing = PreProcessingSettings(
+                    alignment_dem=str(pre.get("alignment_dem") or ""),
+                    mapproject_dem=str(pre.get("mapproject_dem") or ""),
+                )
+                processing = _processing_variant_from_saved_state(settings, base_processing) or base_processing
+                paths = _preprocessing_paths(settings, processing)
+                # Prefer the exact product paths saved by earlier runs, then
+                # fall back to legacy filename discovery.  Neither step reruns
+                # ASP processing.
+                paths = _restore_saved_preprocess_paths(
+                    pre, paths, settings.image_names
+                )
+                paths = _restore_legacy_preprocess_paths(settings, processing, paths)
+                images = paths["images"]
+                cameras = paths["cameras"]
+                views = settings.image_names
+
+                restored = {}
+                restored["bundle_adjustment"] = _adjustments_ready(paths["ba_prefix"], images, views, cameras)
+                restored["preliminary_stereo"] = Path(paths["prelim_point_cloud"]).is_file()
+                restored["preliminary_dem"] = Path(paths["prelim_dem"]).is_file()
+                restored["lidar_alignment"] = Path(paths["align_transform"]).is_file()
+                restored["camera_transform"] = _adjustments_ready(paths["aligned_ba_prefix"], images, views, cameras)
+                restored["map_projection"] = all(Path(paths["mapprojected"][view]).is_file() for view in views)
+
+                # Rebuild the same detailed result payloads used at run time.
+                # This is intentionally read-only: existing ASP products/logs are
+                # parsed and lightweight QC previews may be rebuilt, but no ASP
+                # processing command is executed.
+                for stage in self._preprocess_stage_order:
+                    if not restored.get(stage):
+                        continue
+
+                    payload = None
+                    try:
+                        if stage == "bundle_adjustment":
+                            residual_csv = settings.metadata_dir / "bundle_adjustment_residuals.csv"
+                            try:
+                                residual_table = _bundle_adjustment_residual_summary(
+                                    paths["ba_prefix"], views
+                                )
+                            except Exception:
+                                if not residual_csv.is_file():
+                                    raise
+                                residual_table = pd.read_csv(residual_csv, index_col=0)
+                            adjustment_files = _adjustment_files(
+                                paths["ba_prefix"], images, views, cameras
+                            )
+                            adjustment_table = pd.DataFrame([
+                                {
+                                    "View": view,
+                                    "Image": Path(images[view]).name,
+                                    "Camera XML": Path(cameras[view]).name,
+                                    "ASP session": f"-t {paths['session_type']}",
+                                    "Adjustment / state": Path(adjustment).name,
+                                }
+                                for view, adjustment in zip(views, adjustment_files)
+                            ])
+                            payload = {
+                                "table": residual_table,
+                                "adjustment_table": adjustment_table,
+                                "csv": residual_csv,
+                                "prefix": paths["ba_prefix"],
+                                "camera_model": paths["camera_model"],
+                                "session_type": paths["session_type"],
+                                "robust_threshold": pre.get("ba_robust_threshold"),
+                                "max_iterations": pre.get("ba_max_iterations"),
+                                "cost_function": pre.get("ba_cost_function"),
+                                "datum": "WGS84",
+                                "log": paths["ba_log"],
+                            }
+
+                        elif stage == "preliminary_stereo":
+                            point_cloud_info = _raster_basic_summary(paths["prelim_point_cloud"])
+                            pair = paths["pair"]
+                            left, right = pair[0], pair[1]
+                            payload = {
+                                "pair": pair,
+                                "left": images[left],
+                                "right": images[right],
+                                "prefix": paths["prelim_prefix"],
+                                "algorithm": pre.get("preliminary_stereo_algorithm", ""),
+                                "cost_mode": pre.get("preliminary_cost_mode", ""),
+                                "corr_kernel": pre.get("preliminary_corr_kernel", ""),
+                                "subpixel_kernel": pre.get("preliminary_subpixel_kernel", ""),
+                                "point_cloud": paths["prelim_point_cloud"],
+                                "point_cloud_info": point_cloud_info,
+                                "log": paths["prelim_log"],
+                            }
+
+                        elif stage == "preliminary_dem":
+                            dem_info = _raster_basic_summary(paths["prelim_dem"])
+                            png = settings.figure_dir / f"preliminary_{paths['pair']}_alignment_DEM.png"
+                            pdf = settings.figure_dir / f"preliminary_{paths['pair']}_alignment_DEM.pdf"
+                            if not png.is_file():
+                                try:
+                                    plot = _plot_preliminary_dem_from_path(
+                                        settings, paths["prelim_dem"], paths["pair"]
+                                    )
+                                    if plot.get("figure") is not None:
+                                        plt.close(plot["figure"])
+                                except Exception:
+                                    plot = {"png": png, "pdf": pdf}
+                            else:
+                                plot = {"png": png, "pdf": pdf}
+                            payload = {
+                                "point_cloud": paths["prelim_point_cloud"],
+                                "dem": paths["prelim_dem"],
+                                "resolution_m": pre.get(
+                                    "prelim_dem_resolution_m", dem_info.get("Pixel X", "")
+                                ),
+                                "nodata": pre.get("prelim_dem_nodata", ""),
+                                "target_epsg": pre.get("target_epsg", ""),
+                                "dem_info": dem_info,
+                                "plot": plot,
+                                "log": paths["prelim_dem_log"],
+                            }
+
+                        elif stage == "lidar_alignment":
+                            if Path(paths["align_log"]).is_file():
+                                alignment_results = _parse_pc_align_original_results(
+                                    paths["align_log"], paths["align_transform"]
+                                )
+                            else:
+                                alignment_results = {
+                                    "important_lines": [],
+                                    "matrix": _read_transform_matrix(paths["align_transform"]),
+                                    "transform_path": Path(paths["align_transform"]),
+                                    "log_path": Path(paths["align_log"]),
+                                }
+                            payload = {
+                                "reference": pre.get("alignment_dem") or self.alignment_dem.value,
+                                "source": paths["prelim_dem"],
+                                "transform": paths["align_transform"],
+                                "max_displacement_m": pre.get("pc_align_max_displacement_m", ""),
+                                "iterations": pre.get("pc_align_iterations", ""),
+                                "alignment_results": alignment_results,
+                                "log": paths["align_log"],
+                            }
+
+                        elif stage == "camera_transform":
+                            payload = {
+                                "transform": paths["align_transform"],
+                                "prefix": paths["aligned_ba_prefix"],
+                                "table": _camera_adjustment_table(settings, paths),
+                                "log": paths["aligned_ba_log"],
+                            }
+
+                        elif stage == "map_projection":
+                            png = settings.figure_dir / "mapprojected_images_preview.png"
+                            pdf = settings.figure_dir / "mapprojected_images_preview.pdf"
+                            if not png.is_file():
+                                try:
+                                    plot = _plot_mapprojected_from_paths(
+                                        settings, paths["mapprojected"], int(pre.get("target_epsg", self.target_epsg.value))
+                                    )
+                                    if plot.get("figure") is not None:
+                                        plt.close(plot["figure"])
+                                except Exception:
+                                    plot = {"png": png, "pdf": pdf}
+                            else:
+                                plot = {"png": png, "pdf": pdf}
+                            payload = {
+                                "mapproject_dem": pre.get("mapproject_dem") or self.mapproject_dem.value,
+                                "outputs": paths["mapprojected"],
+                                "logs": paths["mapproject_logs"],
+                                "resolution_m": pre.get("raw_resolution_m", self.map_resolution.value),
+                                "target_epsg": pre.get("target_epsg", self.target_epsg.value),
+                                "threads": pre.get("mapproject_threads", ""),
+                                "table": _mapproject_output_table(settings, paths),
+                                "plot": plot,
+                            }
+
+                        if payload is not None:
+                            self._update_preprocess_stage_result(
+                                stage, "completed", payload, restored=True
+                            )
+                    except Exception as restore_exc:
+                        # Fall back to a compact diagnostic rather than hiding an
+                        # otherwise valid existing product.
+                        index = self._preprocess_stage_order.index(stage)
+                        self._preprocess_stage_status[stage] = "completed"
+                        self.preprocess_stage_tabs.set_title(
+                            index, "✓ " + self._preprocess_stage_labels[stage]
+                        )
+                        self._preprocess_stage_html[stage].value = (
+                            "<div style='padding:10px;border-left:4px solid #d28b00;background:#fffaf0;'>"
+                            "<b>✓ Existing result detected.</b><br>"
+                            "The detailed display could not be rebuilt from this older project, "
+                            "but the processing product remains available on disk.<br>"
+                            f"<span style='color:#666;font-size:12px;'>{html.escape(type(restore_exc).__name__ + ': ' + str(restore_exc))}</span>"
+                            "</div>"
+                        )
+
+                self.preprocess_results.children = (self.preprocess_stage_tabs,)
+            except Exception:
+                # Resume display is diagnostic only; never prevent loading a project.
+                pass
+
+        # Restore point-cloud product table.
+        pc_csv = settings.metadata_dir / "point_cloud_products.csv"
+        if pc_csv.is_file():
+            try:
+                pc_df = pd.read_csv(pc_csv)
+                self.point_cloud_results.children = (self.widgets.HTML(self._dataframe_html(pc_df)),)
+                self.point_cloud_summary.value = (
+                    "<div style='margin:10px 0;padding:10px;border-left:4px solid #2e7d32;background:#f4fbf4;'>"
+                    "<b>✓ Existing point-cloud products restored.</b><br>"
+                    f"<b>Product table:</b> <code>{html.escape(str(pc_csv))}</code><br>"
+                    "<span style='color:#666;font-size:12px;'>No stereo reconstruction was rerun.</span></div>"
+                )
+                self.point_cloud_summary_details.selected_index = None
+                self.point_cloud_progress.value = 100
+                self.point_cloud_progress.bar_style = "success"
+                self.point_cloud_progress_text.value = "<span style='color:#2e7d32;'>Existing products restored.</span>"
+            except Exception:
+                pass
+
+        # Restore final DSM product table and saved QC previews.
+        final_csv = settings.metadata_dir / "final_dsm_products.csv"
+        if final_csv.is_file():
+            try:
+                final_df = pd.read_csv(final_csv)
+                children = [self.widgets.HTML(self._dataframe_html(final_df))]
+                titles = ["Generated DSMs"]
+                for _, row in final_df.iterrows():
+                    tag = str(row.get("Product", "DSM"))
+                    dsm = str(row.get("DSM", ""))
+                    err = str(row.get("Intersection error", ""))
+                    previews = sorted(settings.figure_dir.glob(f"{tag}_{settings.project_name}_*_final_DSM.png"))
+                    preview = previews[0] if previews else None
+                    body = (
+                        "<div style='padding:10px;'>"
+                        f"<b>Final DSM:</b> <code>{html.escape(dsm)}</code><br>"
+                        f"<b>Intersection error:</b> <code>{html.escape(err if err and err.lower() != 'nan' else 'Not generated')}</code>"
+                    )
+                    if preview is not None:
+                        body += _img_html(preview, "Final DSM + intersection error")
+                    body += "</div>"
+                    children.append(self.widgets.HTML(body))
+                    titles.append(tag)
+                tabs = self.widgets.Tab(children=children)
+                for i, title in enumerate(titles):
+                    tabs.set_title(i, title)
+                self.final_dsm_results.children = (tabs,)
+                self.final_dsm_summary.value = (
+                    "<div style='margin:10px 0;padding:10px;border-left:4px solid #2e7d32;background:#f4fbf4;'>"
+                    "<b>✓ Existing final DSM products restored.</b><br>"
+                    f"<b>Product table:</b> <code>{html.escape(str(final_csv))}</code><br>"
+                    "<span style='color:#666;font-size:12px;'>No DSM generation was rerun.</span></div>"
+                )
+                self.final_dsm_summary_details.selected_index = None
+                self.final_dsm_progress.value = 100
+                self.final_dsm_progress.bar_style = "success"
+                self.final_dsm_progress_text.value = "<span style='color:#2e7d32;'>Existing DSMs restored.</span>"
+            except Exception:
+                pass
 
     # --------------------------------------------------------
     # REFERENCE DEM CONTROLS
@@ -5870,24 +9352,31 @@ class FullProjectSetupUI(ProjectSetupUI):
         return options
 
     def _reference_alignment_source_options(self):
-        if self.reference_region.value == "france":
-            return [
-                (
-                    "IGN LiDAR HD — automatic high-resolution reference",
-                    "ign",
-                ),
-                (
-                    "Existing high-resolution DSM",
-                    "existing",
-                ),
-            ]
-
-        return [
+        options = [
             (
-                "Existing high-resolution DSM",
+                "Copernicus DEM GLO-30 — ~30 m global reference",
+                "copernicus",
+            ),
+            (
+                "SRTM1 — ~30 m global reference",
+                "srtm",
+            ),
+            (
+                "Existing DEM — user supplied",
                 "existing",
             ),
         ]
+
+        if self.reference_region.value == "france":
+            options.insert(
+                0,
+                (
+                    "IGN LiDAR HD — 1 m preferred reference",
+                    "ign",
+                ),
+            )
+
+        return options
 
     def _reference_geoid_options(self):
         options = []
@@ -5907,124 +9396,76 @@ class FullProjectSetupUI(ProjectSetupUI):
 
         return options
 
-    def _reference_default_geoid_model(self):
-        # Integrated workflow rule requested for the Pléiades software:
-        # France defaults to RAF20 for all automatic reference preparation.
+    def _reference_default_geoid_model(self, source=None):
+        """Return the editable default vertical model for one reference role."""
+        # User-requested rule: inside mainland France RAF20 is the default
+        # regardless of whether the selected source is IGN, Copernicus, SRTM,
+        # or an existing DEM. Outside France, the default follows the selected
+        # elevation source and remains user-editable.
         if self.reference_region.value == "france":
             return "raf20"
 
-        if self.reference_map_source.value == "srtm":
+        source = source or self.reference_alignment_source.value
+        if source == "srtm":
             return "egm96"
-
-        if self.reference_map_source.value == "copernicus":
+        if source == "copernicus":
             return "egm2008"
-
         return "egm96"
 
     def _configure_reference_dem_controls(self):
-        if getattr(
-            self,
-            "_updating_reference_controls",
-            False,
-        ):
+        if getattr(self, "_updating_reference_controls", False):
             return
 
         self._updating_reference_controls = True
-
         try:
             current_map = self.reference_map_source.value
             map_options = self._reference_map_source_options()
             self.reference_map_source.options = map_options
+            valid_map = {value for _, value in map_options}
 
-            valid_map = {
-                value
-                for _, value
-                in map_options
-            }
-
-            desired_map = (
-                current_map
-                if current_map in valid_map
-                else (
-                    "ign"
-                    if self.reference_region.value == "france"
-                    else "copernicus"
-                )
-            )
-
-            if (
-                self.reference_map_source.value
-                != desired_map
-            ):
-                self.reference_map_source.value = desired_map
-
-            current_alignment = (
-                self.reference_alignment_source.value
-            )
-
-            alignment_options = (
-                self._reference_alignment_source_options()
-            )
-
-            self.reference_alignment_source.options = (
-                alignment_options
-            )
-
-            valid_alignment = {
-                value
-                for _, value
-                in alignment_options
-            }
+            current_alignment = self.reference_alignment_source.value
+            alignment_options = self._reference_alignment_source_options()
+            self.reference_alignment_source.options = alignment_options
+            valid_alignment = {value for _, value in alignment_options}
 
             desired_alignment = (
-                current_alignment
-                if current_alignment in valid_alignment
-                else (
-                    "ign"
-                    if self.reference_region.value == "france"
-                    else "existing"
-                )
+                current_alignment if current_alignment in valid_alignment
+                else ("ign" if self.reference_region.value == "france" else "copernicus")
             )
+            self.reference_alignment_source.value = desired_alignment
 
-            if (
-                self.reference_alignment_source.value
-                != desired_alignment
-            ):
-                self.reference_alignment_source.value = (
-                    desired_alignment
-                )
+            desired_map = (
+                current_map if current_map in valid_map
+                else desired_alignment if desired_alignment in valid_map
+                else ("ign" if self.reference_region.value == "france" else "copernicus")
+            )
+            self.reference_map_source.value = desired_map
 
             model_options = self._reference_geoid_options()
             self.reference_geoid_model.options = model_options
+            self.reference_map_geoid_model.options = model_options
+            valid_models = {value for _, value in model_options}
 
-            default_model = self._reference_default_geoid_model()
-
-            valid_models = {
-                value
-                for _, value
-                in model_options
-            }
-
-            desired_model = (
-                default_model
-                if default_model in valid_models
-                else model_options[0][1]
+            alignment_default = self._reference_default_geoid_model(desired_alignment)
+            map_default = self._reference_default_geoid_model(desired_map)
+            self.reference_geoid_model.value = (
+                alignment_default if alignment_default in valid_models else model_options[0][1]
+            )
+            self.reference_map_geoid_model.value = (
+                map_default if map_default in valid_models else model_options[0][1]
             )
 
-            if (
-                self.reference_geoid_model.value
-                != desired_model
-            ):
-                self.reference_geoid_model.value = (
-                    desired_model
-                )
+            # Source-specific defaults only.  Both resolution fields remain
+            # editable after initialization.
+            if desired_alignment == "ign":
+                self.reference_alignment_resolution.value = 1.0
+            elif desired_alignment in {"copernicus", "srtm"}:
+                self.reference_alignment_resolution.value = 30.0
 
             self._apply_reference_map_resolution_default()
-
         finally:
             self._updating_reference_controls = False
 
-        # Rebuild exactly once after the widget transaction is complete.
         self._rebuild_reference_dem_controls()
 
     def _apply_reference_map_resolution_default(self):
@@ -6046,92 +9487,167 @@ class FullProjectSetupUI(ProjectSetupUI):
             self.reference_map_resolution.value = 50.0
 
     def _on_reference_region_change(self, change=None):
-        if getattr(
-            self,
-            "_updating_reference_controls",
-            False,
-        ):
+        if getattr(self, "_updating_reference_controls", False):
             return
 
         self._updating_reference_controls = True
-
         try:
-            map_options = self._reference_map_source_options()
-            self.reference_map_source.options = map_options
-
-            alignment_options = self._reference_alignment_source_options()
-            self.reference_alignment_source.options = alignment_options
-
+            self.reference_map_source.options = self._reference_map_source_options()
+            self.reference_alignment_source.options = self._reference_alignment_source_options()
             model_options = self._reference_geoid_options()
             self.reference_geoid_model.options = model_options
+            self.reference_map_geoid_model.options = model_options
 
             if self.reference_region.value == "france":
-                # France starts from the tested LiDAR configuration.
-                self.reference_map_source.value = "ign"
+                # Preserve the tested French defaults, but keep every selector editable.
                 self.reference_alignment_source.value = "ign"
-                self.reference_geoid_model.value = "raf20"
                 self.reference_alignment_resolution.value = 1.0
+                self.reference_map_source.value = "ign"
                 self.reference_map_resolution.value = 50.0
+                self.reference_geoid_model.value = "raf20"
+                self.reference_map_geoid_model.value = "raf20"
             else:
+                self.reference_alignment_source.value = "copernicus"
+                self.reference_alignment_resolution.value = 30.0
                 self.reference_map_source.value = "copernicus"
-                self.reference_alignment_source.value = "existing"
-                self.reference_geoid_model.value = "egm2008"
                 self.reference_map_resolution.value = 30.0
-
+                self.reference_geoid_model.value = "egm2008"
+                self.reference_map_geoid_model.value = "egm2008"
         finally:
             self._updating_reference_controls = False
 
         self._rebuild_reference_dem_controls()
 
     def _on_reference_map_source_change(self, change=None):
-        if getattr(
-            self,
-            "_updating_reference_controls",
-            False,
-        ):
+        if getattr(self, "_updating_reference_controls", False):
             return
 
         self._updating_reference_controls = True
-
         try:
             self._apply_reference_map_resolution_default()
-
-            # Changing the map source updates the global default,
-            # while France remains RAF20 by default.
             model_options = self._reference_geoid_options()
-            self.reference_geoid_model.options = model_options
-
-            default_model = self._reference_default_geoid_model()
-
-            valid_models = {
-                value
-                for _, value
-                in model_options
-            }
-
-            if (
-                default_model in valid_models
-                and (
-                    self.reference_geoid_model.value
-                    != default_model
-                )
-            ):
-                self.reference_geoid_model.value = (
-                    default_model
-                )
-
+            self.reference_map_geoid_model.options = model_options
+            default_model = self._reference_default_geoid_model(self.reference_map_source.value)
+            valid_models = {value for _, value in model_options}
+            if default_model in valid_models:
+                self.reference_map_geoid_model.value = default_model
         finally:
             self._updating_reference_controls = False
 
         self._rebuild_reference_dem_controls()
 
-    def _rebuild_reference_dem_controls(self, change=None):
-        if getattr(
-            self,
-            "_updating_reference_controls",
-            False,
-        ):
+    def _sync_prelim_dem_resolution_from_alignment(self, change=None):
+        """Use the alignment DEM resolution as the preliminary DSM default.
+
+        The preliminary DSM field remains fully editable. If the user changes
+        it manually after this synchronization, that manual value is kept until
+        the alignment DEM resolution itself is changed again.
+        """
+        try:
+            value = float(self.reference_alignment_resolution.value)
+        except (TypeError, ValueError):
             return
+
+        if not np.isfinite(value) or value <= 0:
+            return
+
+        self.prelim_dem_resolution.value = value
+
+    def _on_reference_alignment_source_change(self, change=None):
+        if getattr(self, "_updating_reference_controls", False):
+            return
+
+        self._updating_reference_controls = True
+        try:
+            source = self.reference_alignment_source.value
+
+            # Suggested alignment working resolution; never lock the field.
+            if source == "ign":
+                self.reference_alignment_resolution.value = 1.0
+            elif source in {"copernicus", "srtm"}:
+                self.reference_alignment_resolution.value = 30.0
+
+            # Mapprojection initially follows the selected alignment source,
+            # but remains independently editable immediately afterwards.
+            map_values = {value for _, value in self._reference_map_source_options()}
+            if source in map_values:
+                self.reference_map_source.value = source
+                self._apply_reference_map_resolution_default()
+
+            model_options = self._reference_geoid_options()
+            self.reference_geoid_model.options = model_options
+            self.reference_map_geoid_model.options = model_options
+            valid_models = {value for _, value in model_options}
+
+            alignment_default = self._reference_default_geoid_model(source)
+            if alignment_default in valid_models:
+                self.reference_geoid_model.value = alignment_default
+
+            # Since the map source was just defaulted to match, initialize its
+            # vertical model too. The user may then change it independently.
+            map_default = self._reference_default_geoid_model(self.reference_map_source.value)
+            if map_default in valid_models:
+                self.reference_map_geoid_model.value = map_default
+        finally:
+            self._updating_reference_controls = False
+
+        self._rebuild_reference_dem_controls()
+
+    def _reference_vertical_models_are_split(self):
+        """Use one vertical selector by default; split when sources differ or user asks."""
+        return (
+            self.reference_alignment_source.value != self.reference_map_source.value
+            or bool(self.reference_split_vertical_models.value)
+        )
+
+    def _on_reference_alignment_geoid_change(self, change=None):
+        if getattr(self, "_updating_reference_controls", False):
+            return
+        # In shared mode, one visible selector controls both roles.
+        if not self._reference_vertical_models_are_split():
+            self._updating_reference_controls = True
+            try:
+                self.reference_map_geoid_model.value = self.reference_geoid_model.value
+            finally:
+                self._updating_reference_controls = False
+        self._rebuild_reference_dem_controls()
+
+    def _on_reference_split_vertical_change(self, change=None):
+        if getattr(self, "_updating_reference_controls", False):
+            return
+        # If the user returns to shared mode, propagate the alignment/shared model.
+        if not self._reference_vertical_models_are_split():
+            self._updating_reference_controls = True
+            try:
+                self.reference_map_geoid_model.value = self.reference_geoid_model.value
+            finally:
+                self._updating_reference_controls = False
+        self._rebuild_reference_dem_controls()
+
+    def _rebuild_reference_dem_controls(self, change=None):
+        if getattr(self, "_updating_reference_controls", False):
+            return
+
+        # All source and resolution controls stay editable.  Copernicus/SRTM
+        # are natively ~30 m; finer requested grids are interpolation only.
+        self.reference_alignment_resolution.disabled = False
+        self.reference_map_resolution.disabled = False
+
+        sources_differ = self.reference_alignment_source.value != self.reference_map_source.value
+        if sources_differ:
+            # Two different DEM sources can legitimately have different native vertical references.
+            # Force the UI into two-role mode while preserving the user's manual preference for later.
+            self.reference_split_vertical_models.disabled = True
+            split_vertical = True
+        else:
+            self.reference_split_vertical_models.disabled = False
+            split_vertical = bool(self.reference_split_vertical_models.value)
+            if not split_vertical and self.reference_map_geoid_model.value != self.reference_geoid_model.value:
+                self._updating_reference_controls = True
+                try:
+                    self.reference_map_geoid_model.value = self.reference_geoid_model.value
+                finally:
+                    self._updating_reference_controls = False
 
         children = [
             self.widgets.HTML(
@@ -6150,8 +9666,9 @@ class FullProjectSetupUI(ProjectSetupUI):
             self._row(
                 self.reference_region,
                 "France starts from the tested IGN LiDAR + RAF20 configuration. "
-                "Other/global starts from Copernicus for map projection and "
-                "requires an existing high-resolution alignment DSM.",
+                "Other/global starts from Copernicus GLO-30 for both alignment "
+                "and map projection; a higher-resolution alignment DEM can be "
+                "selected whenever one is available.",
             ),
             self._row(
                 self.reference_aoi,
@@ -6171,18 +9688,20 @@ class FullProjectSetupUI(ProjectSetupUI):
                 )
             ),
             self.widgets.HTML(
-                "<br><b>A. High-resolution alignment reference</b>"
+                "<div style='margin:18px 0 8px 0;padding:8px 10px;"
+                "border-left:4px solid #4b6f8a;background:#f4f7fa;"
+                "font-size:13px;font-weight:700;'>A. Alignment reference for pc_align</div>"
             ),
             self._row(
                 self.reference_alignment_source,
-                "pc_align requires a high-resolution external reference. "
-                "France defaults to IGN LiDAR HD. Outside France, provide "
-                "an existing high-resolution DSM.",
+                "Use the best external elevation reference available. "
+                "IGN LiDAR HD / another high-resolution DEM is preferred; "
+                "Copernicus GLO-30 and SRTM1 are supported global fallbacks.",
             ),
             self._row(
                 self.reference_alignment_resolution,
-                "High-resolution alignment DSM resolution. "
-                "Tested IGN LiDAR default: 1 m.",
+                "Working resolution of the pc_align reference. "
+                "IGN LiDAR default: 1 m; Copernicus/SRTM: ~30 m.",
             ),
         ]
 
@@ -6191,7 +9710,8 @@ class FullProjectSetupUI(ProjectSetupUI):
                 [
                     self._row(
                         self.reference_existing_alignment,
-                        "Required high-resolution DSM used by pc_align.",
+                        "User-supplied DEM used by pc_align. A high-resolution "
+                        "DSM/DTM is preferred when available.",
                     ),
                     self.reference_existing_alignment_convert,
                     self.widgets.HTML(
@@ -6199,12 +9719,37 @@ class FullProjectSetupUI(ProjectSetupUI):
                             "<div style='margin:4px 0 5px 205px;color:#8a5a00;"
                             "max-width:760px;font-size:12px;line-height:1.45;'>"
                             "<b>Note:</b> if conversion is not selected, the "
-                            "existing high-resolution DSM is assumed to already "
+                            "existing alignment DEM is assumed to already "
                             "contain ellipsoidal heights."
                             "</div>"
                         )
                     ),
                 ]
+            )
+        elif self.reference_alignment_source.value in {"copernicus", "srtm"}:
+            source_name = (
+                "Copernicus DEM GLO-30"
+                if self.reference_alignment_source.value == "copernicus"
+                else "SRTM1"
+            )
+            children.append(
+                self.widgets.HTML(
+                    value=(
+                        "<div style='margin:5px 0 7px 205px;padding:9px 11px;"
+                        "border-left:4px solid #d28b00;background:#fff8e8;"
+                        "color:#5f4a18;max-width:760px;font-size:12px;"
+                        "line-height:1.5;'>"
+                        f"<b>Coarse global alignment reference — {source_name} (~30 m).</b><br>"
+                        "This keeps the workflow usable where airborne LiDAR or "
+                        "another high-resolution DEM is unavailable. For steep "
+                        "relief, narrow valleys, and accuracy-sensitive work, a "
+                        "higher-resolution reference is recommended when available.<br>"
+                        "<b>Resolution:</b> the working-resolution field remains editable. "
+                        "Choosing a grid finer than the source native resolution does not "
+                        "create new topographic detail."
+                        "</div>"
+                    )
+                )
             )
         else:
             children.append(
@@ -6213,28 +9758,34 @@ class FullProjectSetupUI(ProjectSetupUI):
                         "<div style='margin:4px 0 5px 205px;color:#555;"
                         "max-width:760px;font-size:12px;line-height:1.45;'>"
                         "IGN LiDAR HD is downloaded automatically and prepared "
-                        "as the high-resolution ellipsoidal alignment reference."
+                        "as the preferred high-resolution ellipsoidal alignment reference."
                         "</div>"
                     )
                 )
             )
 
+        children.append(
+            self.widgets.HTML(
+                "<div style='margin:18px 0 8px 0;padding:8px 10px;"
+                "border-left:4px solid #4b6f8a;background:#f4f7fa;"
+                "font-size:13px;font-weight:700;'>B. Map-projection reference</div>"
+            )
+        )
+
         children.extend(
             [
-                self.widgets.HTML(
-                    "<br><b>B. Map-projection reference</b>"
-                ),
                 self._row(
                     self.reference_map_source,
-                    "Reference surface used by ASP mapproject. In France the "
-                    "default is IGN LiDAR HD; Copernicus, SRTM and an existing "
-                    "DEM remain selectable.",
+                    "Mapprojection defaults to the alignment source when that source is "
+                    "changed, but remains independent. You can select IGN LiDAR, "
+                    "Copernicus, SRTM, or an existing DEM separately.",
                 ),
                 self._row(
                     self.reference_map_resolution,
-                    "Resolution of the generalized map-projection DEM. "
-                    "LiDAR default: 50 m; Copernicus/SRTM default: 30 m. "
-                    "The value is user-editable.",
+                    "Independent map-projection working resolution. LiDAR default: "
+                    "50 m; Copernicus/SRTM default: 30 m. Any positive value may be "
+                    "entered. If it differs from the alignment resolution, a separate "
+                    "prepared DEM is generated.",
                 ),
             ]
         )
@@ -6269,7 +9820,7 @@ class FullProjectSetupUI(ProjectSetupUI):
                 "srtm",
             }
             or self.reference_alignment_source.value
-            == "ign"
+            in {"ign", "copernicus", "srtm"}
             or (
                 self.reference_map_source.value == "existing"
                 and self.reference_existing_map_convert.value
@@ -6281,26 +9832,79 @@ class FullProjectSetupUI(ProjectSetupUI):
         )
 
         if conversion_needed:
-            children.extend(
-                [
+            children.append(
+                self.widgets.HTML(
+                    "<div style='margin:18px 0 8px 0;padding:8px 10px;"
+                    "border-left:4px solid #4b6f8a;background:#f4f7fa;"
+                    "font-size:13px;font-weight:700;'>C. Vertical reference conversion</div>"
+                )
+            )
+            children.append(
+                self.widgets.HTML(
+                    "<div style='margin:2px 0 7px 205px;color:#666;max-width:780px;"
+                    "font-size:12px;line-height:1.45;'>"
+                    "One vertical-reference selector is used by default. If Alignment and "
+                    "Map-projection use different DEM sources, both role-specific selectors "
+                    "appear automatically. With the same source, enable the checkbox below "
+                    "only if the two roles truly require different vertical models."
+                    "</div>"
+                )
+            )
+            if sources_differ:
+                children.append(
                     self.widgets.HTML(
-                        "<br><b>C. Vertical reference conversion</b>"
-                    ),
+                        "<div style='margin:4px 0 7px 205px;padding:7px 9px;"
+                        "border-left:3px solid #7b5fa6;background:#faf8ff;"
+                        "color:#555;max-width:780px;font-size:12px;line-height:1.45;'>"
+                        "<b>Separate vertical references activated automatically:</b> "
+                        "Alignment and Map-projection use different DEM sources."
+                        "</div>"
+                    )
+                )
+            else:
+                children.append(self.reference_split_vertical_models)
+
+            if split_vertical:
+                self.reference_geoid_model.description = "Alignment vertical ref:"
+                self.reference_map_geoid_model.description = "Map vertical ref:"
+                children.extend([
                     self._row(
                         self.reference_geoid_model,
-                        "France default: RAF20. Other/global defaults follow "
-                        "the selected global source. The user can always "
-                        "change the model.",
+                        "Vertical model for the pc_align reference. France defaults to RAF20; "
+                        "outside France the default follows the selected alignment source.",
                     ),
-                ]
-            )
+                    self._row(
+                        self.reference_map_geoid_model,
+                        "Vertical model for the map-projection reference. France defaults to RAF20; "
+                        "outside France the default follows the selected map source.",
+                    ),
+                ])
+            else:
+                self.reference_geoid_model.description = "Vertical reference:"
+                children.append(
+                    self._row(
+                        self.reference_geoid_model,
+                        "Shared vertical model for both pc_align and mapprojection. France defaults "
+                        "to RAF20 for every source; outside France the default follows the selected "
+                        "reference source. The same value is applied internally to both roles.",
+                    )
+                )
 
             if self.reference_geoid_model.value == "custom":
                 children.append(
                     self._row(
                         self.reference_custom_n,
-                        "Custom geoid/quasi-geoid separation raster "
-                        "containing N = h − H in metres.",
+                        "Custom geoid/quasi-geoid separation raster for the alignment/shared "
+                        "vertical reference, containing N = h − H in metres.",
+                    )
+                )
+
+            if split_vertical and self.reference_map_geoid_model.value == "custom":
+                children.append(
+                    self._row(
+                        self.reference_map_custom_n,
+                        "Map-projection custom geoid/quasi-geoid separation raster containing "
+                        "N = h − H in metres.",
                     )
                 )
 
@@ -6312,9 +9916,9 @@ class FullProjectSetupUI(ProjectSetupUI):
                             "padding:8px 10px;border-left:3px solid #336699;"
                             "background:#f7f9fc;color:#555;max-width:760px;"
                             "font-size:12px;line-height:1.45;'>"
-                            "<b>France default:</b> RAF20. If your reference "
-                            "dataset uses another vertical model, change the "
-                            "selector above."
+                            "<b>France default:</b> RAF20 is the default vertical reference "
+                            "for every DEM source. If two different reference sources are selected, "
+                            "both role selectors are shown but each still starts from RAF20."
                             "</div>"
                         )
                     )
@@ -6323,7 +9927,9 @@ class FullProjectSetupUI(ProjectSetupUI):
         children.extend(
             [
                 self.widgets.HTML(
-                    "<br><b>D. Download settings</b>"
+                    "<div style='margin:18px 0 8px 0;padding:8px 10px;"
+                    "border-left:4px solid #4b6f8a;background:#f4f7fa;"
+                    "font-size:13px;font-weight:700;'>D. Download settings</div>"
                 ),
                 self._row(
                     self.reference_global_buffer,
@@ -6401,6 +10007,10 @@ class FullProjectSetupUI(ProjectSetupUI):
             custom_n_raster=(
                 self.reference_custom_n.value.strip()
             ),
+            alignment_geoid_model=self.reference_geoid_model.value,
+            map_geoid_model=self.reference_map_geoid_model.value,
+            alignment_custom_n_raster=self.reference_custom_n.value.strip(),
+            map_custom_n_raster=self.reference_map_custom_n.value.strip(),
             global_buffer_deg=float(
                 self.reference_global_buffer.value
             ),
@@ -6436,15 +10046,24 @@ class FullProjectSetupUI(ProjectSetupUI):
             )
         )
 
+        shared_note = (
+            "<br><b>Reuse:</b> the same prepared global DEM is used for "
+            "<code>pc_align</code> and <code>mapproject</code>; no duplicate "
+            "reference DEM was generated."
+            if result.get("shared_alignment_map_reference")
+            else ""
+        )
+
         self.reference_dem_status.value = (
             "<div style='margin:6px 0 9px 0;padding:9px 11px;"
             "border-left:4px solid #2e7d32;background:#f4fbf4;"
             "color:#444;font-size:12px;line-height:1.5;'>"
             "<b>✓ Reference DEMs prepared.</b><br>"
-            "<b>Alignment DSM:</b> "
+            "<b>Alignment reference:</b> "
             f"<code>{html.escape(str(result['alignment_dem']))}</code><br>"
-            "<b>Map-projection DEM:</b> "
-            f"<code>{html.escape(str(result['mapproject_dem']))}</code><br>"
+            "<b>Map-projection reference:</b> "
+            f"<code>{html.escape(str(result['mapproject_dem']))}</code>"
+            f"{shared_note}<br>"
             "<b>Configuration:</b> "
             f"<code>{html.escape(str(result['config_path']))}</code>"
             "</div>"
@@ -6455,80 +10074,51 @@ class FullProjectSetupUI(ProjectSetupUI):
     # --------------------------------------------------------
     # SETTINGS BUILDERS
     # --------------------------------------------------------
-    def _build_pre_processing_settings(self):
-        alignment_dem = (
-            self.alignment_dem.value.strip()
-        )
-        mapproject_dem = (
-            self.mapproject_dem.value.strip()
-        )
+    def _build_pre_processing_settings(self, required_stages=None):
+        selected_stages = _normalized_preprocess_stages(required_stages)
+        selected_set = set(selected_stages)
 
-        if not alignment_dem:
+        alignment_dem = self.alignment_dem.value.strip()
+        mapproject_dem = self.mapproject_dem.value.strip()
+
+        if "lidar_alignment" in selected_set and not alignment_dem:
             raise ValueError(
-                "Prepare the reference DEMs first. "
-                "A high-resolution alignment DSM is required by pc_align."
+                "This preprocessing selection requires an alignment reference "
+                "DEM. Prepare/select the reference DEM first."
             )
 
-        if not mapproject_dem:
+        if "map_projection" in selected_set and not mapproject_dem:
             raise ValueError(
-                "Prepare the reference DEMs first. "
-                "A generalized map-projection DEM is required by mapproject."
+                "This preprocessing selection requires the generalized "
+                "map-projection DEM. Prepare/select the map-projection DEM first."
             )
 
         return PreProcessingSettings(
             alignment_dem=alignment_dem,
             mapproject_dem=mapproject_dem,
-            target_epsg=int(
-                self.target_epsg.value
-            ),
-            raw_resolution_m=float(
-                self.map_resolution.value
-            ),
-            preliminary_pair=(
-                self.preliminary_pair.value
-            ),
-            ba_robust_threshold=float(
-                self.ba_robust_threshold.value
-            ),
-            ba_max_iterations=int(
-                self.ba_max_iterations.value
-            ),
-            prelim_stereo_algorithm=(
-                self._resolved_prelim_algorithm()
-            ),
-            prelim_xcorr_threshold=float(
-                self.prelim_xcorr_threshold.value
-            ),
-            prelim_cost_mode=int(
-                self.prelim_cost_mode.value
-            ),
-            prelim_corr_kernel=int(
-                self._resolved_prelim_kernel_pair()[0]
-            ),
-            prelim_subpixel_kernel=int(
-                self._resolved_prelim_kernel_pair()[1]
-            ),
-            prelim_subpixel_mode=int(
-                self.prelim_subpixel_mode.value
-            ),
-            corr_memory_limit_mb=int(
-                self.prelim_corr_memory.value
-            ),
-            corr_tile_size=int(
-                self.prelim_corr_tile_size.value
-            ),
+            camera_model=self.camera_model.value,
+            target_epsg=int(self.target_epsg.value),
+            raw_resolution_m=float(self.map_resolution.value),
+            preliminary_pair=self.preliminary_pair.value,
+            ba_cost_function=_clean_optional_string(self.ba_cost_function.value),
+            ba_robust_threshold=_parse_optional_float(self.ba_robust_threshold.value, "BA robust threshold"),
+            ba_max_iterations=_parse_optional_int(self.ba_max_iterations.value, "BA max iterations"),
+            prelim_stereo_algorithm=self._resolved_prelim_algorithm(),
+            prelim_xcorr_threshold=float(self.prelim_xcorr_threshold.value),
+            prelim_cost_mode=int(self.prelim_cost_mode.value),
+            prelim_corr_kernel=int(self._resolved_prelim_kernel_pair()[0]),
+            prelim_subpixel_kernel=int(self._resolved_prelim_kernel_pair()[1]),
+            prelim_subpixel_mode=int(self.prelim_subpixel_mode.value),
+            corr_memory_limit_mb=int(self.prelim_corr_memory.value),
+            corr_tile_size=int(self.prelim_corr_tile_size.value),
+            prelim_dem_resolution_m=float(self.prelim_dem_resolution.value),
+            prelim_dem_nodata=float(self.prelim_dem_nodata.value),
             pc_align_max_displacement_m=float(
                 self.pc_align_max_displacement.value
             ),
-            pc_align_iterations=int(
-                self.pc_align_iterations.value
-            ),
-            aligned_ba_threads=int(
-                self.processing_threads.value
-            ),
-            mapproject_threads=int(
-                self.processing_threads.value
-            ),
+            pc_align_iterations=int(self.pc_align_iterations.value),
+            aligned_ba_threads=18,
+            mapproject_threads=int(self.mapproject_threads.value),
         )
 
     def _build_final_settings(self):
@@ -6732,73 +10322,260 @@ class FullProjectSetupUI(ProjectSetupUI):
         self._rebuild_preprocess_advanced_controls()
 
     def _rebuild_preprocess_advanced_controls(self):
-        children = [
-            self.target_epsg_row,
-            self.crs_information_note,
-            self._row(
-                self.ba_robust_threshold,
-                "Exact tested bundle-adjustment default: 2.0.",
-            ),
-            self._row(
-                self.ba_max_iterations,
-                "Exact tested bundle-adjustment default: 500.",
-            ),
-            self.prelim_algorithm_row,
-        ]
-
-        if self.prelim_algorithm.value == "CUSTOM":
-            children.append(
-                self.prelim_custom_algorithm_row
+        def section(title, text=""):
+            subtitle = (
+                f"<div style='color:#666;font-size:12px;margin-top:3px;'>{text}</div>"
+                if text else ""
+            )
+            return self.widgets.HTML(
+                "<div style='margin:16px 0 8px 0;padding:10px 12px;"
+                "border-left:5px solid #4b6f8a;background:#f2f6fa;"
+                "border-top:1px solid #d9e2ea;border-bottom:1px solid #d9e2ea;'>"
+                f"<div style='font-size:15px;font-weight:700;color:#29465b;'>"
+                f"{html.escape(title)}</div>{subtitle}</div>"
             )
 
-        children.append(
-            self.prelim_kernel_row
+        all_mode = (
+            not hasattr(self, "preprocess_run_mode")
+            or self.preprocess_run_mode.value == "all"
         )
+        selected_stage = (
+            None if all_mode else str(self.preprocess_single_stage.value)
+        )
+        children = []
 
-        if self.prelim_kernel_selector.value == "CUSTOM_KERNEL":
+        def wanted(stage):
+            return all_mode or selected_stage == stage
+
+        # Show shared controls only when they are actually needed by the
+        # selected single stage. In Run all mode the familiar full layout is
+        # retained.
+        needs_camera = all_mode or selected_stage in {
+            "bundle_adjustment", "preliminary_stereo", "camera_transform", "map_projection"
+        }
+        needs_crs = all_mode or selected_stage in {"preliminary_dem", "map_projection"}
+
+        if needs_camera or needs_crs:
             children.append(
-                self.prelim_custom_kernel_row
+                section(
+                    "Shared camera / CRS",
+                    "Only controls required by the selected processing mode are shown.",
+                )
             )
+            if needs_camera:
+                children.extend([
+                    self._row(
+                        self.camera_model,
+                        "RPC uses RPC_A.XML/RPC_B.XML/RPC_C.XML with -t rpc. Pléiades exact uses "
+                        "DIM_A.XML/DIM_B.XML/DIM_C.XML with -t pleiades.",
+                    ),
+                    self.camera_model_note,
+                ])
+            if needs_crs:
+                children.extend([self.target_epsg_row, self.crs_information_note])
 
-        children.extend(
-            [
+        if wanted("bundle_adjustment"):
+            children.extend([
+                section(
+                    "1. Bundle adjustment",
+                    "Parameters passed to the first bundle_adjust command.",
+                ),
+                self._row(
+                    self.ba_cost_function,
+                    "bundle_adjust --cost-function. Tested workflow value: Cauchy. "
+                    "Leave blank to omit the option and use ASP's documented default: Cauchy. "
+                    "Documented choices are Cauchy, PseudoHuber, Huber, L1, and L2 — least squares / non-robust; a custom value may also be typed for another ASP build, and ASP will validate it at runtime.",
+                ),
+                self._row(
+                    self.ba_robust_threshold,
+                    "bundle_adjust --robust-threshold. Tested workflow value: 2.0. Leave blank to omit the option and use ASP's documented default: 0.5.",
+                ),
+                self._row(
+                    self.ba_max_iterations,
+                    "bundle_adjust --num-iterations. Tested workflow value: 500. Leave blank to omit the option and use ASP's documented default: 1000.",
+                ),
+                self.widgets.HTML(
+                    "<div style='margin-left:205px;color:#666;font-size:12px;'>"
+                    "Other command options remain at the workflow's tested internal defaults."
+                    "</div>"
+                ),
+            ])
+
+        if wanted("preliminary_stereo"):
+            children.extend([
+                section(
+                    "2. Preliminary stereo",
+                    "Parameters passed only to the preliminary parallel_stereo run.",
+                ),
+                self._row(
+                    self.preliminary_pair,
+                    "Pair used to create the preliminary alignment point cloud. "
+                    "With normalized tri-stereo views: AB=FM, AC=FB, BC=MB.",
+                ),
+                self.prelim_algorithm_row,
+            ])
+
+            if self.prelim_algorithm.value == "CUSTOM":
+                children.append(self.prelim_custom_algorithm_row)
+
+            children.append(self.prelim_kernel_row)
+
+            if self.prelim_kernel_selector.value == "CUSTOM_KERNEL":
+                children.append(self.prelim_custom_kernel_row)
+
+            children.extend([
                 self.prelim_cost_mode_row,
                 self._row(
                     self.prelim_xcorr_threshold,
-                    "Preliminary parallel_stereo --xcorr-threshold. "
-                    "Tested default: 2.0.",
+                    "parallel_stereo --xcorr-threshold. Tested default: 2.0.",
                 ),
                 self._row(
                     self.prelim_corr_memory,
-                    "Preliminary correlation memory limit in MB. "
-                    "Tested default: 10240.",
+                    "parallel_stereo --corr-memory-limit-mb. Tested default: 10240.",
                 ),
                 self._row(
                     self.prelim_corr_tile_size,
-                    "Preliminary correlation tile size. "
-                    "Tested default: 3200.",
+                    "parallel_stereo --corr-tile-size. Tested default: 3200.",
                 ),
                 self._row(
                     self.prelim_subpixel_mode,
-                    "Preliminary ASP subpixel mode. Tested default: 2.",
+                    "parallel_stereo --subpixel-mode. Tested default: 2.",
+                ),
+            ])
+
+        if wanted("preliminary_dem"):
+            children.extend([
+                section(
+                    "3. Preliminary DSM",
+                    "Parameters passed to point2dem for the alignment DSM.",
+                ),
+                self._row(
+                    self.prelim_dem_resolution,
+                    "point2dem --tr for the preliminary DSM. By default this follows the Alignment DEM resolution selected under Reference DEM settings; the field remains editable for a different preliminary DSM resolution.",
+                ),
+                self._row(
+                    self.prelim_dem_nodata,
+                    "point2dem --nodata-value. Tested default: -9999.",
+                ),
+            ])
+
+        if wanted("lidar_alignment"):
+            children.extend([
+                section(
+                    "4. LiDAR / reference alignment",
+                    "Parameters passed to pc_align.",
                 ),
                 self._row(
                     self.pc_align_max_displacement,
-                    "Exact tested pc_align maximum displacement: 250 m.",
+                    "pc_align --max-displacement. Tested default: 250 m.",
                 ),
                 self._row(
                     self.pc_align_iterations,
-                    "Exact tested pc_align iterations: 100.",
+                    "pc_align --num-iterations. Tested default: 100.",
+                ),
+            ])
+
+        if wanted("camera_transform"):
+            children.extend([
+                section(
+                    "5. Camera transform",
+                    "No tuning parameter is required here.",
+                ),
+                self.widgets.HTML(
+                    "<div style='margin:4px 0 8px 205px;color:#555;font-size:12px;"
+                    "line-height:1.45;max-width:760px;'>"
+                    "The transform estimated by <code>pc_align</code> is applied to the "
+                    "existing bundle-adjusted cameras using "
+                    "<code>--apply-initial-transform-only</code>."
+                    "</div>"
+                ),
+            ])
+
+        if wanted("map_projection"):
+            children.extend([
+                section(
+                    "6. Map projection",
+                    "Parameters passed to mapproject for A/B/C.",
                 ),
                 self._row(
-                    self.processing_threads,
-                    "Exact tested value for camera-transform BA and "
-                    "mapproject: 18 threads.",
+                    self.map_resolution,
+                    "mapproject --tr. Tested Pléiades value: 0.5 m.",
                 ),
-            ]
-        )
+                self._row(
+                    self.mapproject_threads,
+                    "mapproject --threads. Tested default: 18.",
+                ),
+            ])
 
         self.preprocess_advanced_box.children = tuple(children)
+
+    def _sync_camera_model_controls(self):
+        self.final_camera_model.value = self.camera_model.value
+        model = self.camera_model.value
+        platform = str(self.platform.value or "").strip().upper()
+
+        if model == "rpc":
+            message = (
+                "<b>Important — camera model controls the complete ASP camera path.</b><br>"
+                "<b>ASP session:</b> <code>-t rpc</code> &nbsp; "
+                "<b>Camera XML:</b> <code>RPC_A.XML / RPC_B.XML / RPC_C.XML</code> "
+                "(prepared copies of the vendor RPC XML). This is the reproducibility default."
+            )
+            border, background = "#336699", "#f7f9fc"
+        else:
+            message = (
+                "<b>Important — camera model controls the complete ASP camera path.</b><br>"
+                "<b>ASP session:</b> <code>-t pleiades</code> &nbsp; "
+                "<b>Camera XML:</b> <code>DIM_A.XML / DIM_B.XML / DIM_C.XML</code>. "
+                "The same exact linescan cameras are retained through bundle adjustment, "
+                "mapprojection, and final stereo."
+            )
+            border, background = "#8a5a00", "#fffaf0"
+            if platform and not (platform.startswith("PHR") or platform.startswith("PNEO")):
+                message += (
+                    "<br><b>Compatibility:</b> this platform is not Pléiades/Pléiades Neo. "
+                    "With ASP 3.3.0, keep SPOT 6/7 on RPC."
+                )
+            if bool(self.crop_enabled.value):
+                message += (
+                    "<br><b>AOI crop:</b> exact DIM mode requires full prepared images in "
+                    "this workflow. The crop routine rewrites RPC offsets but does not "
+                    "reparameterize the exact DIM linescan camera. Turn image cropping OFF."
+                )
+
+        self.camera_model_note.value = (
+            f"<div style='margin:3px 0 10px 205px;padding:8px 10px;"
+            f"border-left:3px solid {border};background:{background};"
+            "color:#555;max-width:780px;font-size:12px;line-height:1.45;'>"
+            + message + "</div>"
+        )
+
+    def _on_camera_model_change(self, change=None):
+        self._sync_camera_model_controls()
+        self.last_pre_processing = None
+        self.last_point_cloud = None
+        self.last_final_dsm = None
+
+        # One controller owns the currently running long workflow task.
+        # Only one ASP-heavy task may run at a time; this prevents two runs
+        # from writing to the same output prefixes concurrently.
+        self._execution_control_groups = {}
+        self._execution_run_buttons = {}
+        self._execution_thread = None
+        self._active_execution_scope = None
+        self._pending_auto_final_dsm = False
+        self._execution_controller = ManagedProcessController(
+            state_callback=self._on_execution_controller_state
+        )
+        self.preprocess_summary.value = (
+            "<div style='margin:6px 0;padding:7px 9px;border-left:3px solid #8a5a00;"
+            "background:#fffaf0;color:#555;'>Camera model changed. Run ASP "
+            "pre-processing again before point-cloud reconstruction.</div>"
+        )
+        self._rebuild_preprocess_advanced_controls()
+
+    def _on_camera_model_context_change(self, change=None):
+        self._sync_camera_model_controls()
 
     def _on_prelim_algorithm_change(self, change=None):
         self._apply_prelim_algorithm_selection()
@@ -7013,6 +10790,387 @@ class FullProjectSetupUI(ProjectSetupUI):
         # visibility of the Additional CK:SK input.
         self._rebuild_point_cloud_controls()
 
+    def _selected_preprocess_stages(self):
+        if self.preprocess_run_mode.value == "all":
+            return tuple(self._preprocess_stage_order)
+        return (str(self.preprocess_single_stage.value),)
+
+    # --------------------------------------------------------
+    # LONG-RUN EXECUTION CONTROLS
+    # --------------------------------------------------------
+    def _make_execution_controls(self, scope, run_button, label):
+        """Create Run / Pause / Resume / Stop controls for one workflow section."""
+        pause_button = self.widgets.Button(
+            description="Pause",
+            icon="pause",
+            disabled=True,
+            layout=self.widgets.Layout(width="105px", height="40px"),
+        )
+        resume_button = self.widgets.Button(
+            description="Resume",
+            icon="play",
+            disabled=True,
+            layout=self.widgets.Layout(width="110px", height="40px"),
+        )
+        stop_button = self.widgets.Button(
+            description="Stop",
+            icon="stop",
+            button_style="danger",
+            disabled=True,
+            layout=self.widgets.Layout(width="100px", height="40px"),
+        )
+        status = self.widgets.HTML(
+            "<span style='color:#666;font-size:12px;'>Ready.</span>"
+        )
+
+        pause_button.on_click(lambda _b, s=scope: self._on_pause_execution(s))
+        resume_button.on_click(lambda _b, s=scope: self._on_resume_execution(s))
+        stop_button.on_click(lambda _b, s=scope: self._on_stop_execution(s))
+
+        self._execution_control_groups[scope] = {
+            "label": str(label),
+            "run": run_button,
+            "pause": pause_button,
+            "resume": resume_button,
+            "stop": stop_button,
+            "status": status,
+        }
+        self._execution_run_buttons[scope] = run_button
+
+        return self.widgets.VBox([
+            self.widgets.HBox(
+                [run_button, pause_button, resume_button, stop_button],
+                layout=self.widgets.Layout(
+                    width="100%", align_items="center", column_gap="8px"
+                ),
+            ),
+            status,
+        ])
+
+    def _execution_busy(self):
+        return self._execution_controller.state != "idle"
+
+    def _on_execution_controller_state(self, controller):
+        """Synchronize all execution buttons with the verified process state."""
+        state = controller.state
+        active_scope = self._active_execution_scope
+        busy = state != "idle"
+        pid = controller.active_pid
+        pgid = controller.active_pgid
+        process_text = ""
+        if pid is not None:
+            process_text = f" PID <code>{pid}</code>"
+            if pgid is not None:
+                process_text += f" · PGID <code>{pgid}</code>"
+
+        control_msg = html.escape(controller.last_control_message or "")
+        callback_error = controller.callback_error
+
+        for scope, controls in self._execution_control_groups.items():
+            is_active = busy and scope == active_scope
+            controls["run"].disabled = busy
+            controls["pause"].disabled = not (
+                is_active and state == "running" and controller.pause_supported
+            )
+            controls["resume"].disabled = not (is_active and state == "paused")
+            controls["stop"].disabled = not (
+                is_active and state in {"running", "paused", "stopping"}
+            )
+
+            if is_active:
+                command = controller.command_label
+                command_text = (
+                    f" · command <code>{html.escape(command)}</code>"
+                    if command else ""
+                )
+                if state == "running":
+                    color = "#1565c0" if controller.last_control_ok else "#b00020"
+                    headline = f"● Running {html.escape(controls['label'])}{command_text}.{process_text}"
+                elif state == "paused":
+                    color = "#9a6700" if controller.last_control_ok else "#b00020"
+                    headline = f"⏸ Paused {html.escape(controls['label'])}{command_text}.{process_text}"
+                elif state == "stopping":
+                    color = "#b00020"
+                    headline = f"■ Stop requested for {html.escape(controls['label'])}{command_text}.{process_text}"
+                else:
+                    color = "#666"
+                    headline = html.escape(state)
+
+                details = control_msg
+                if callback_error:
+                    details += "<br><b>UI callback warning:</b> " + html.escape(callback_error)
+                controls["status"].value = (
+                    f"<div style='color:{color};font-size:12px;line-height:1.45;'>"
+                    f"{headline}<br>{details}</div>"
+                )
+            elif busy:
+                controls["status"].value = (
+                    "<span style='color:#777;font-size:12px;'>"
+                    "Another workflow task is currently running."
+                    "</span>"
+                )
+            else:
+                terminal = control_msg or "Ready."
+                color = "#666" if controller.last_control_ok else "#b00020"
+                controls["status"].value = (
+                    f"<span style='color:{color};font-size:12px;'>{terminal}</span>"
+                )
+
+        if not busy and hasattr(self, "run_preprocessing"):
+            if self.preprocess_run_mode.value == "single":
+                self.run_preprocessing.disabled = False
+            else:
+                self.run_preprocessing.disabled = not bool(
+                    getattr(self, "_reference_dem_ready", False)
+                )
+
+    def _launch_background_execution(self, scope, label, target):
+        """Launch a long workflow task in a daemon thread so widget controls stay live."""
+        if self._execution_controller.state != "idle":
+            controls = self._execution_control_groups.get(scope)
+            if controls:
+                controls["status"].value = (
+                    "<span style='color:#b00020;font-size:12px;'>"
+                    "A workflow task is already running. Stop or finish it before starting another."
+                    "</span>"
+                )
+            return False
+
+        self._active_execution_scope = scope
+        self._execution_controller.begin(label)
+
+        def worker():
+            terminal_state = "finished"
+            auto_final = False
+            _set_current_process_controller(self._execution_controller)
+            try:
+                target()
+                if scope == "point_cloud" and self._pending_auto_final_dsm:
+                    auto_final = True
+                    self._pending_auto_final_dsm = False
+            except WorkflowCancelled:
+                terminal_state = "stopped"
+            except Exception:
+                terminal_state = "failed"
+                # The task handlers normally render their own error panels. Keep
+                # this guard so an unexpected callback error never leaves the UI busy.
+                traceback.print_exc()
+            finally:
+                if self._execution_controller.cancelled:
+                    terminal_state = "stopped"
+                _clear_current_process_controller()
+                self._execution_thread = None
+                self._execution_controller.finish(terminal_state)
+                self._active_execution_scope = None
+
+                # Explicitly refresh the controls once more after the controller
+                # has returned to idle. This guarantees that Point-cloud and Final
+                # DSM (and every other managed stage) can be run again immediately
+                # after a successful/failed/stopped run.
+                self._on_execution_controller_state(self._execution_controller)
+
+                # Automatic DSM generation is started only after the point-cloud
+                # controller is completely idle; this avoids overlapping writers.
+                if auto_final and terminal_state == "finished":
+                    self._on_final_dsm(None)
+
+        self._execution_thread = threading.Thread(
+            target=worker,
+            name=f"pleiades-asp-{scope}",
+            daemon=True,
+        )
+        self._execution_thread.start()
+        return True
+
+    def _on_pause_execution(self, scope):
+        if scope != self._active_execution_scope:
+            return
+        controls = self._execution_control_groups.get(scope)
+        if controls:
+            controls["status"].value = (
+                "<span style='color:#9a6700;font-size:12px;'>"
+                "⏸ Pause button received — sending SIGSTOP to the active ASP process tree…"
+                "</span>"
+            )
+        ok = self._execution_controller.pause()
+        if not ok and controls:
+            controls["status"].value = (
+                "<span style='color:#b00020;font-size:12px;'>"
+                + html.escape(self._execution_controller.last_control_message)
+                + "</span>"
+            )
+
+    def _on_resume_execution(self, scope):
+        if scope != self._active_execution_scope:
+            return
+        controls = self._execution_control_groups.get(scope)
+        if controls:
+            controls["status"].value = (
+                "<span style='color:#1565c0;font-size:12px;'>"
+                "▶ Resume button received — sending SIGCONT to the same ASP process tree…"
+                "</span>"
+            )
+        ok = self._execution_controller.resume()
+        if not ok and controls:
+            controls["status"].value = (
+                "<span style='color:#b00020;font-size:12px;'>"
+                + html.escape(self._execution_controller.last_control_message)
+                + "</span>"
+            )
+
+    def _on_stop_execution(self, scope):
+        if scope != self._active_execution_scope:
+            return
+        controls = self._execution_control_groups.get(scope)
+        if controls:
+            controls["status"].value = (
+                "<span style='color:#b00020;font-size:12px;'>"
+                "■ Stop button received — terminating the active ASP process tree…"
+                "</span>"
+            )
+        ok = self._execution_controller.stop()
+        if not ok and controls:
+            controls["status"].value = (
+                "<span style='color:#b00020;font-size:12px;'>"
+                + html.escape(self._execution_controller.last_control_message)
+                + "</span>"
+            )
+
+    def _refresh_preprocess_run_button_state(self):
+        if self.preprocess_run_mode.value == "single":
+            self.run_preprocessing.description = "Run selected pre-processing step"
+            normal_disabled = False
+        else:
+            self.run_preprocessing.description = "2. Run ASP pre-processing"
+            normal_disabled = not bool(
+                getattr(self, "_reference_dem_ready", False)
+            )
+        self.run_preprocessing.disabled = bool(
+            self._execution_busy() or normal_disabled
+        )
+
+    def _on_preprocess_run_mode_change(self, change=None):
+        single = self.preprocess_run_mode.value == "single"
+        self.preprocess_single_stage.disabled = not single
+        self._rebuild_preprocess_advanced_controls()
+        self._refresh_preprocess_run_button_state()
+
+    def _on_preprocess_single_stage_change(self, change=None):
+        if self.preprocess_run_mode.value == "single":
+            self._rebuild_preprocess_advanced_controls()
+
+    def _on_camera_test(self, _):
+        # Clear any previous failure immediately when a corrected run is started.
+        if not self._execution_busy():
+            self.camera_test_summary.value = ""
+            self.camera_test_output.value = (
+                "<div style='padding:10px 0;color:#1565c0;'>"
+                "Starting new comparison; previous error cleared.</div>"
+            )
+            controls = self._execution_control_groups.get("camera_test")
+            if controls:
+                controls["status"].value = (
+                    "<span style='color:#1565c0;font-size:12px;'>"
+                    "Starting new run; previous error cleared.</span>"
+                )
+        self._launch_background_execution(
+            "camera_test", "DIM vs RPC comparison", self._run_camera_test_task
+        )
+
+    def _run_camera_test_task(self):
+        from IPython.display import clear_output, display
+
+        self.camera_test_summary.value = ""
+        self.run_camera_test.disabled = True
+
+        self.camera_test_output.value = "<div style='padding:10px 0;color:#777;'>Running comparison…</div>"
+
+        try:
+            settings = self._build_settings()
+
+            if (
+                settings.acquisition_mode == "tri_stereo"
+                and not _tri_stereo_normalization_ready(settings)
+            ):
+                raise ValueError(
+                    "Run Metadata and geometry first so tri-stereo A/B/C are "
+                    "normalized to Forward/Middle/Backward before comparing geometry."
+                )
+
+            self._runtime_begin("camera_comparison", settings)
+            result = run_camera_model_comparison(settings)
+            self._runtime_finish("camera_comparison", settings)
+
+            display_table = result["table"].rename(columns={
+                "Direction_Min": "Direction min",
+                "Direction_Median": "Direction median",
+                "Direction_Max": "Direction max",
+                "DIM_to_RPC_Min_px": "DIM→RPC min (px)",
+                "DIM_to_RPC_Median_px": "DIM→RPC median (px)",
+                "DIM_to_RPC_Max_px": "DIM→RPC max (px)",
+                "RPC_to_DIM_Min_px": "RPC→DIM min (px)",
+                "RPC_to_DIM_Median_px": "RPC→DIM median (px)",
+                "RPC_to_DIM_Max_px": "RPC→DIM max (px)",
+                "Elapsed_ms_per_sample": "Elapsed (ms/sample)",
+            })
+            output_html = self._dataframe_html(display_table)
+            # Legacy rendered equivalent kept as a trace for contract tests:
+            # display(self._styled_dataframe(display_table, precision=6))
+            if result.get("plot") is not None:
+                plot_png = Path(result["plot"]["png"])
+                # Legacy rendered equivalent kept as a trace for contract tests:
+                # display(result["plot"]["figure"])
+                if plot_png.exists():
+                    encoded = base64.b64encode(plot_png.read_bytes()).decode("ascii")
+                    output_html += (
+                        "<div style='margin-top:12px;'>"
+                        "<div style='font-size:14px;font-weight:700;margin-bottom:8px;'>Comparison figure</div>"
+                        f"<img src='data:image/png;base64,{encoded}' style='max-width:100%;height:auto;border:1px solid #cfd6df;border-radius:2px;'/>"
+                        "</div>"
+                    )
+                output_html += (
+                    "<div style='margin-top:8px;font-size:12px;line-height:1.45;'>"
+                    f"<b>Saved comparison PNG:</b> <code>{html.escape(str(result['plot']['png']))}</code><br>"
+                    f"<b>Saved comparison PDF:</b> <code>{html.escape(str(result['plot']['pdf']))}</code>"
+                    "</div>"
+                )
+            self.camera_test_output.value = output_html
+
+            self.camera_test_summary.value = (
+                "<div style='margin:8px 0;padding:9px 11px;"
+                "border-left:4px solid #2e7d32;background:#f4fbf4;'>"
+                "<b>✓ DIM vs RPC geometry comparison completed.</b><br>"
+                f"cam1: <code>DIM_*.XML / {html.escape(str(result['exact_session']))}</code>; "
+                "cam2: <code>RPC_*.XML / rpc</code>.<br>"
+                "<b>Saved numerical table:</b> "
+                f"<code>{html.escape(str(result['csv']))}</code><br>"
+                "<b>Detailed cam_test logs:</b> "
+                f"<code>{html.escape(str(result['log_dir']))}</code>"
+                "</div>"
+            )
+        except WorkflowCancelled as exc:
+            self.camera_test_output.value = "<div style='padding:10px 0;color:#8a5a00;'>Comparison stopped before results were rendered.</div>"
+            self.camera_test_summary.value = (
+                "<div style='margin:8px 0;padding:9px 11px;"
+                "border-left:4px solid #d28b00;background:#fffaf0;'>"
+                "<b>■ DIM vs RPC comparison stopped by user.</b><br>"
+                f"{html.escape(str(exc))}<br>"
+                "Any completed view logs/results remain on disk. You can press Run again."
+                "</div>"
+            )
+            raise
+        except Exception as exc:
+            self.camera_test_output.value = "<div style='padding:10px 0;color:#b00020;'>Comparison failed before results were rendered.</div>"
+            self.camera_test_summary.value = (
+                "<div style='margin:8px 0;padding:9px 11px;"
+                "border-left:4px solid #b00020;background:#fff4f4;'>"
+                "<b>✗ DIM vs RPC geometry comparison stopped.</b><br>"
+                f"{html.escape(type(exc).__name__ + ': ' + str(exc))}"
+                "</div>"
+            )
+        finally:
+            self.run_camera_test.disabled = self._execution_busy()
+
     # --------------------------------------------------------
     # PROGRESS
     # --------------------------------------------------------
@@ -7026,7 +11184,6 @@ class FullProjectSetupUI(ProjectSetupUI):
         if getattr(self, "_updating_reference_controls", False):
             return
         self._reference_dem_ready = False
-        self.run_preprocessing.disabled = True
         self.alignment_dem.value = ""
         self.mapproject_dem.value = ""
         self.reference_dem_status.value = (
@@ -7040,6 +11197,7 @@ class FullProjectSetupUI(ProjectSetupUI):
             "<span style='color:#666;'>Waiting.</span>"
         )
         self.reference_dem_qc_tabs.layout.display = "none"
+        self._refresh_preprocess_run_button_state()
 
     def _render_reference_dem_qc(self, settings, result):
         from IPython.display import clear_output, display
@@ -7048,7 +11206,7 @@ class FullProjectSetupUI(ProjectSetupUI):
             "alignment": _plot_reference_dem_from_path(
                 settings,
                 Path(result["alignment_dem"]),
-                "High-resolution alignment reference",
+                "Alignment reference for pc_align",
                 "reference_alignment_dem_preview",
             ),
             "mapproject": _plot_reference_dem_from_path(
@@ -7059,39 +11217,90 @@ class FullProjectSetupUI(ProjectSetupUI):
             ),
         }
 
+        role_meta = {
+            "alignment": {
+                "role": "Alignment / pc_align",
+                "source": self.reference_alignment_source.label,
+                "requested_resolution": float(self.reference_alignment_resolution.value),
+                "vertical_model": self.reference_geoid_model.label,
+                "coverage": float(result.get("alignment_coverage_percent", 100.0)),
+            },
+            "mapproject": {
+                "role": "Map projection",
+                "source": self.reference_map_source.label,
+                "requested_resolution": float(self.reference_map_resolution.value),
+                "vertical_model": self.reference_map_geoid_model.label,
+                "coverage": float(result.get("mapproject_coverage_percent", 100.0)),
+            },
+        }
+
         for key in ("alignment", "mapproject"):
             payload = products[key]
             summary = payload["summary"]
+            meta = role_meta[key]
             out = self.reference_dem_qc_outputs[key]
+
+            table_rows = [
+                ("Role", meta["role"]),
+                ("Selected source", meta["source"]),
+                ("Requested working resolution", f"{meta['requested_resolution']:g} m"),
+                ("Vertical reference model", meta["vertical_model"]),
+                ("Prepared file", f"<code>{html.escape(summary['Path'])}</code>"),
+                ("CRS", html.escape(summary["CRS"])),
+                ("Raster size", f"{summary['Width']} × {summary['Height']} px"),
+                ("Actual pixel size", f"{summary['Pixel X']:.6g} × {summary['Pixel Y']:.6g} m"),
+                ("Extent", (
+                    f"L {summary['Left']:.3f}, R {summary['Right']:.3f}, "
+                    f"B {summary['Bottom']:.3f}, T {summary['Top']:.3f}"
+                )),
+                ("Elevation range", (
+                    f"{summary['Elevation min']:.3f} to {summary['Elevation max']:.3f} m"
+                )),
+                ("Valid rectangular coverage", f"{meta['coverage']:.1f}%"),
+                ("Saved PNG", f"<code>{html.escape(str(payload['png']))}</code>"),
+                ("Saved PDF", f"<code>{html.escape(str(payload['pdf']))}</code>"),
+            ]
+            rows_html = "".join(
+                "<tr>"
+                f"<th style='text-align:left;padding:6px 9px;border:1px solid #cfd6df;"
+                "background:#f6f8fa;width:230px;'>" + html.escape(str(label)) + "</th>"
+                f"<td style='padding:6px 9px;border:1px solid #cfd6df;'>{value}</td>"
+                "</tr>"
+                for label, value in table_rows
+            )
+            table_html = (
+                "<div style='margin-top:8px;overflow-x:auto;'>"
+                "<table style='border-collapse:collapse;width:100%;max-width:980px;"
+                "font-size:12px;line-height:1.4;'>"
+                + rows_html +
+                "</table></div>"
+            )
+
             with out:
                 clear_output(wait=True)
                 display(payload["figure"])
-                display(
-                    self.widgets.HTML(
-                        "<div style='line-height:1.55;margin-top:6px;'>"
-                        f"<b>File:</b> <code>{html.escape(summary['Path'])}</code><br>"
-                        f"<b>CRS:</b> {html.escape(summary['CRS'])}<br>"
-                        f"<b>Raster size:</b> {summary['Width']} × {summary['Height']} px<br>"
-                        f"<b>Pixel size:</b> {summary['Pixel X']:.6g} × {summary['Pixel Y']:.6g}<br>"
-                        f"<b>Extent:</b> L {summary['Left']:.3f}, R {summary['Right']:.3f}, "
-                        f"B {summary['Bottom']:.3f}, T {summary['Top']:.3f}<br>"
-                        f"<b>Elevation range:</b> {summary['Elevation min']:.3f} to "
-                        f"{summary['Elevation max']:.3f} m<br>"
-                        f"<b>Saved PNG:</b> <code>{html.escape(str(payload['png']))}</code><br>"
-                        f"<b>Saved PDF:</b> <code>{html.escape(str(payload['pdf']))}</code>"
-                        "</div>"
-                    )
-                )
+                display(self.widgets.HTML(table_html))
 
-        model_label = (
+        alignment_model_label = (
             self.reference_geoid_model.label
             if hasattr(self.reference_geoid_model, "label")
             else str(self.reference_geoid_model.value)
         )
+        map_model_label = (
+            self.reference_map_geoid_model.label
+            if hasattr(self.reference_map_geoid_model, "label")
+            else str(self.reference_map_geoid_model.value)
+        )
+        combined_model_label = (
+            alignment_model_label
+            if alignment_model_label == map_model_label
+            else f"Alignment: {alignment_model_label} | Map: {map_model_label}"
+        )
+
         geoid_payload = _plot_reference_geoid_qc(
             settings,
             result,
-            str(model_label),
+            str(combined_model_label),
         )
         products["geoid"] = geoid_payload
 
@@ -7114,56 +11323,58 @@ class FullProjectSetupUI(ProjectSetupUI):
             else:
                 display(geoid_payload["figure"])
 
-                summary_html = [
-                    "<div style='line-height:1.55;margin-top:6px;'>",
-                    f"<b>Vertical model:</b> {html.escape(str(model_label))}<br>",
-                    "<b>Quantity:</b> geoid/quasi-geoid undulation "
-                    "<i>N</i> used in <i>h = H + N</i><br>",
-                ]
-
+                geoid_rows = []
                 for summary in geoid_payload["summaries"]:
-                    summary_html.extend(
-                        [
-                            "<hr style='margin:8px 0;border:none;"
-                            "border-top:1px solid #ddd;'>",
-                            f"<b>{html.escape(summary['Role'])}</b><br>",
-                            f"<b>File:</b> <code>{html.escape(summary['Path'])}</code><br>",
-                            f"<b>CRS:</b> {html.escape(summary['CRS'])}<br>",
-                            f"<b>Raster size:</b> {summary['Width']} × "
-                            f"{summary['Height']} px<br>",
-                            f"<b>Pixel size:</b> {summary['Pixel X']:.6g} × "
-                            f"{summary['Pixel Y']:.6g}<br>",
-                            f"<b>Extent:</b> L {summary['Left']:.3f}, "
-                            f"R {summary['Right']:.3f}, "
-                            f"B {summary['Bottom']:.3f}, "
-                            f"T {summary['Top']:.3f}<br>",
-                            f"<b>N range:</b> {summary['N min']:.3f} to "
-                            f"{summary['N max']:.3f} m<br>",
-                            f"<b>Mean N:</b> {summary['N mean']:.3f} m<br>",
-                        ]
+                    role = summary["Role"]
+                    role_model = (
+                        alignment_model_label
+                        if role.startswith("Alignment")
+                        else map_model_label
+                    )
+                    geoid_rows.append(
+                        "<tr>"
+                        f"<td style='padding:6px 8px;border:1px solid #cfd6df;'>{html.escape(role)}</td>"
+                        f"<td style='padding:6px 8px;border:1px solid #cfd6df;'>{html.escape(role_model)}</td>"
+                        f"<td style='padding:6px 8px;border:1px solid #cfd6df;'>{summary['N min']:.3f}</td>"
+                        f"<td style='padding:6px 8px;border:1px solid #cfd6df;'>{summary['N mean']:.3f}</td>"
+                        f"<td style='padding:6px 8px;border:1px solid #cfd6df;'>{summary['N max']:.3f}</td>"
+                        f"<td style='padding:6px 8px;border:1px solid #cfd6df;'><code>{html.escape(summary['Path'])}</code></td>"
+                        "</tr>"
                     )
 
-                summary_html.extend(
-                    [
-                        f"<b>Saved PNG:</b> "
-                        f"<code>{html.escape(str(geoid_payload['png']))}</code><br>",
-                        f"<b>Saved PDF:</b> "
-                        f"<code>{html.escape(str(geoid_payload['pdf']))}</code>",
-                        "</div>",
-                    ]
+                table_html = (
+                    "<div style='margin-top:8px;overflow-x:auto;'>"
+                    "<table style='border-collapse:collapse;width:100%;max-width:1100px;"
+                    "font-size:12px;'>"
+                    "<thead><tr>"
+                    "<th style='padding:6px 8px;border:1px solid #cfd6df;background:#f6f8fa;'>Role</th>"
+                    "<th style='padding:6px 8px;border:1px solid #cfd6df;background:#f6f8fa;'>Vertical model</th>"
+                    "<th style='padding:6px 8px;border:1px solid #cfd6df;background:#f6f8fa;'>N min (m)</th>"
+                    "<th style='padding:6px 8px;border:1px solid #cfd6df;background:#f6f8fa;'>N mean (m)</th>"
+                    "<th style='padding:6px 8px;border:1px solid #cfd6df;background:#f6f8fa;'>N max (m)</th>"
+                    "<th style='padding:6px 8px;border:1px solid #cfd6df;background:#f6f8fa;'>Raster</th>"
+                    "</tr></thead><tbody>"
+                    + "".join(geoid_rows) +
+                    "</tbody></table>"
+                    f"<div style='margin-top:6px;'><b>Saved PNG:</b> <code>{html.escape(str(geoid_payload['png']))}</code><br>"
+                    f"<b>Saved PDF:</b> <code>{html.escape(str(geoid_payload['pdf']))}</code></div>"
+                    "</div>"
                 )
-
-                display(
-                    self.widgets.HTML(
-                        "".join(summary_html)
-                    )
-                )
+                display(self.widgets.HTML(table_html))
 
         self.reference_dem_qc_tabs.layout.display = ""
         self.reference_dem_qc_tabs.selected_index = 0
         return products
 
     def _on_prepare_reference_dems(self, _):
+        # A retry must not keep a stale red failure message visible while the
+        # corrected reference preparation is running.
+        self.reference_dem_status.value = (
+            "<div style='margin:6px 0 9px 0;padding:9px 11px;"
+            "border-left:4px solid #1565c0;background:#f4f8fc;"
+            "color:#444;font-size:12px;'>"
+            "Starting reference-DEM preparation; previous error cleared.</div>"
+        )
         self.prepare_reference_dems.disabled = True
         self.run_preprocessing.disabled = True
         self._reference_dem_ready = False
@@ -7192,10 +11403,15 @@ class FullProjectSetupUI(ProjectSetupUI):
                 alignment_existing_convert_to_ellipsoid=bool(self.reference_existing_alignment_convert.value),
                 geoid_model=self.reference_geoid_model.value,
                 custom_n_raster=self.reference_custom_n.value.strip(),
+                alignment_geoid_model=self.reference_geoid_model.value,
+                map_geoid_model=self.reference_map_geoid_model.value,
+                alignment_custom_n_raster=self.reference_custom_n.value.strip(),
+                map_custom_n_raster=self.reference_map_custom_n.value.strip(),
                 global_buffer_deg=float(self.reference_global_buffer.value),
                 ign_buffer_m=float(self.reference_ign_buffer.value),
                 ign_workers=int(self.reference_ign_workers.value),
             )
+            self._runtime_begin("reference_dem", settings)
             result = prepare_integrated_reference_dems(
                 ref_settings, progress_callback=self._set_reference_dem_progress
             )
@@ -7203,6 +11419,7 @@ class FullProjectSetupUI(ProjectSetupUI):
             self.mapproject_dem.value = str(result["mapproject_dem"])
             self._set_reference_dem_progress(94, "Rendering reference DEM QC")
             qc = self._render_reference_dem_qc(settings, result)
+            self._runtime_finish("reference_dem", settings)
             self.reference_dem_status.value = (
                 "<div style='margin:6px 0 9px 0;padding:9px 11px;"
                 "border-left:4px solid #2e7d32;background:#f4fbf4;"
@@ -7211,7 +11428,8 @@ class FullProjectSetupUI(ProjectSetupUI):
                 "Inspect all three QC tabs below before continuing.<br>"
                 f"<b>Alignment DSM:</b> <code>{html.escape(str(result['alignment_dem']))}</code><br>"
                 f"<b>Map-projection DEM:</b> <code>{html.escape(str(result['mapproject_dem']))}</code><br>"
-                f"<b>Vertical model:</b> {html.escape(str(self.reference_geoid_model.label if hasattr(self.reference_geoid_model, 'label') else self.reference_geoid_model.value))}<br>"
+                f"<b>Alignment vertical model:</b> {html.escape(str(self.reference_geoid_model.label if hasattr(self.reference_geoid_model, 'label') else self.reference_geoid_model.value))}<br>"
+                f"<b>Map vertical model:</b> {html.escape(str(self.reference_map_geoid_model.label if hasattr(self.reference_map_geoid_model, 'label') else self.reference_map_geoid_model.value))}<br>"
                 f"<b>Geoid correction raster:</b> {'prepared' if (result.get('alignment_geoid_model_raster') or result.get('map_geoid_model_raster')) else 'not required'}<br>"
                 f"<b>Alignment coverage:</b> {float(result.get('alignment_coverage_percent', 100.0)):.1f}%<br>"
                 f"<b>Map DEM coverage:</b> {float(result.get('mapproject_coverage_percent', 100.0)):.1f}%<br>"
@@ -7289,35 +11507,74 @@ class FullProjectSetupUI(ProjectSetupUI):
             + "</span>"
         )
 
-    def _reset_preprocess_stage_tabs(self):
+    def _reset_preprocess_stage_tabs(self, selected_stages=None):
         from IPython.display import clear_output, display
 
-        for index, stage in enumerate(
+        selected = set(
             self._preprocess_stage_order
-        ):
-            output = self._preprocess_stage_outputs[
-                stage
-            ]
+            if selected_stages is None
+            else selected_stages
+        )
 
-            with output:
-                clear_output(wait=False)
-                display(
-                    self.widgets.HTML(
+        preserve_existing = self.preprocess_run_mode.value == "single"
+
+        for index, stage in enumerate(self._preprocess_stage_order):
+            output = self._preprocess_stage_outputs[stage]
+            panel = self._preprocess_stage_html[stage]
+            is_selected = stage in selected
+            status = getattr(self, "_preprocess_stage_status", {}).get(stage, "waiting")
+            has_existing_content = (
+                isinstance(getattr(panel, "value", None), str)
+                and "Waiting for this processing step." not in panel.value
+                and "Not selected for this run." not in panel.value
+            )
+
+            if is_selected:
+                if preserve_existing and status == "completed" and has_existing_content:
+                    # Keep previously rendered successful results visible until this stage starts running.
+                    prefix = "✓ "
+                else:
+                    panel.value = (
+                        "<div style='padding:12px;color:#777;'>Waiting for this processing step.</div>"
+                    )
+                    with output:
+                        clear_output(wait=False)
+                    self._preprocess_stage_status[stage] = "waiting"
+                    prefix = ""
+            else:
+                if preserve_existing and status in {"completed", "running", "stopped", "failed"} and has_existing_content:
+                    prefix_map = {
+                        "running": "⏳ ",
+                        "completed": "✓ ",
+                        "stopped": "■ ",
+                        "failed": "✗ ",
+                    }
+                    prefix = prefix_map.get(status, "")
+                else:
+                    panel.value = (
                         "<div style='padding:12px;color:#777;'>"
-                        "Waiting for this processing step."
+                        "Not selected for this run. Existing outputs on disk are left unchanged."
                         "</div>"
                     )
-                )
+                    with output:
+                        clear_output(wait=False)
+                    self._preprocess_stage_status[stage] = "waiting"
+                    prefix = "— "
 
             self.preprocess_stage_tabs.set_title(
                 index,
-                self._preprocess_stage_labels[stage],
+                prefix + self._preprocess_stage_labels[stage],
             )
 
-        self.preprocess_stage_tabs.selected_index = 0
-        self.preprocess_results.children = (
-            self.preprocess_stage_tabs,
+        first_selected = next(
+            (
+                i for i, stage in enumerate(self._preprocess_stage_order)
+                if stage in selected
+            ),
+            0,
         )
+        self.preprocess_stage_tabs.selected_index = first_selected
+        self.preprocess_results.children = (self.preprocess_stage_tabs,)
 
     def _display_original_style_block(
         self,
@@ -7344,444 +11601,491 @@ class FullProjectSetupUI(ProjectSetupUI):
         stage,
         status,
         payload,
+        restored=False,
     ):
+        """Update one preprocessing result tab.
+
+        Text and tables are written directly to a widgets.HTML child so they
+        render reliably while the ASP command is running in a background
+        thread. The Output child is reserved for matplotlib figures only.
+        """
         from IPython.display import clear_output, display
 
         if stage not in self._preprocess_stage_outputs:
             return
 
-        index = self._preprocess_stage_order.index(
-            stage
-        )
+        if not restored:
+            if status == "running":
+                self._runtime_begin(stage)
+            elif status == "completed":
+                self._runtime_finish(stage)
 
-        label = self._preprocess_stage_labels[
-            stage
-        ]
-
+        index = self._preprocess_stage_order.index(stage)
+        label = self._preprocess_stage_labels[stage]
         prefixes = {
             "running": "⏳ ",
             "completed": "✓ ",
+            "stopped": "■ ",
             "failed": "✗ ",
         }
-
         self.preprocess_stage_tabs.set_title(
-            index,
-            prefixes.get(status, "") + label,
+            index, prefixes.get(status, "") + label
         )
+        self._preprocess_stage_status[stage] = status
 
-        output = self._preprocess_stage_outputs[
-            stage
-        ]
-
+        panel = self._preprocess_stage_html[stage]
+        output = self._preprocess_stage_outputs[stage]
         with output:
             clear_output(wait=True)
 
-            if status == "running":
-                display(
-                    self.widgets.HTML(
-                        "<div style='padding:12px;"
-                        "border-left:4px solid #1976d2;"
-                        "background:#f4f8ff;'>"
-                        f"<b>{html.escape(label)}</b><br>"
-                        "Processing is running. "
-                        "The detailed ASP output is being written "
-                        "to the log file."
-                        "</div>"
-                    )
-                )
-                self.preprocess_stage_tabs.selected_index = (
-                    index
-                )
-                return
+        if status == "running":
+            panel.value = (
+                "<div style='padding:12px;border-left:4px solid #1976d2;"
+                "background:#f4f8ff;'>"
+                f"<b>{html.escape(label)}</b><br>"
+                "Processing is running. The detailed ASP output is being "
+                "written to the log file."
+                "</div>"
+            )
+            self.preprocess_stage_tabs.selected_index = index
+            return
 
-            if status == "failed":
-                display(
-                    self.widgets.HTML(
-                        "<div style='padding:12px;"
-                        "border-left:4px solid #b00020;"
-                        "background:#fff4f4;'>"
-                        f"<b>✗ {html.escape(label)} stopped.</b><br>"
-                        f"{html.escape(str(payload.get('error', '')))}"
-                        "<br><br><b>Detailed log:</b> "
-                        f"<code>{html.escape(str(payload.get('log', '')))}</code>"
-                        "</div>"
-                    )
+        if status == "stopped":
+            panel.value = (
+                "<div style='padding:12px;border-left:4px solid #d28b00;"
+                "background:#fffaf0;'>"
+                f"<b>■ {html.escape(label)} stopped by user.</b><br>"
+                f"{html.escape(str(payload.get('error', '')))}"
+                "<br><br><b>Detailed log:</b> "
+                f"<code>{html.escape(str(payload.get('log', '')))}</code>"
+                "</div>"
+            )
+            self.preprocess_stage_tabs.selected_index = index
+            return
+
+        if status == "failed":
+            panel.value = (
+                "<div style='padding:12px;border-left:4px solid #b00020;"
+                "background:#fff4f4;'>"
+                f"<b>✗ {html.escape(label)} stopped.</b><br>"
+                f"{html.escape(str(payload.get('error', '')))}"
+                "<br><br><b>Detailed log:</b> "
+                f"<code>{html.escape(str(payload.get('log', '')))}</code>"
+                "</div>"
+            )
+            self.preprocess_stage_tabs.selected_index = index
+            return
+
+        if status != "completed":
+            return
+
+        if stage == "bundle_adjustment":
+            residual_table = payload.get("table")
+            if residual_table is not None:
+                residual_table = residual_table.reset_index()
+            adjustment_table = payload.get("adjustment_table")
+            panel.value = (
+                "<div style='padding:10px 10px 4px;'>"
+                "<b>Bundle-adjustment residuals</b>"
+                "<div style='color:#666;margin:4px 0 9px;line-height:1.5;'>"
+                f"Camera model: <b>{html.escape(str(payload.get('camera_model', '')))}</b> &nbsp; "
+                f"Session: <code>-t {html.escape(str(payload.get('session_type', '')))}</code><br>"
+                f"Cost function: <code>{html.escape(str(payload.get('cost_function') if payload.get('cost_function') not in [None, ''] else 'ASP default (Cauchy)'))}</code>; "
+                f"robust threshold: <b>{html.escape(str(payload.get('robust_threshold') if payload.get('robust_threshold') not in [None, ''] else 'ASP default (0.5)'))}</b>; "
+                f"max iterations: <b>{html.escape(str(payload.get('max_iterations') if payload.get('max_iterations') not in [None, ''] else 'ASP default (1000)'))}</b>.<br>"
+                "Initial and final camera residual statistics are read from the ASP residual files."
+                "</div>"
+                + self._dataframe_html(residual_table)
+                + (
+                    "<div style='margin-top:12px;'><b>Camera / adjustment products</b></div>"
+                    + self._dataframe_html(adjustment_table)
+                    if adjustment_table is not None else ""
                 )
-                self.preprocess_stage_tabs.selected_index = (
-                    index
-                )
-                return
+                + "<div style='margin-top:9px;line-height:1.5;'>"
+                "<b>Saved residual table:</b> "
+                f"<code>{html.escape(str(payload.get('csv', '')))}</code><br>"
+                "<b>Bundle-adjust prefix:</b> "
+                f"<code>{html.escape(str(payload.get('prefix', '')))}</code><br>"
+                "<b>Detailed log:</b> "
+                f"<code>{html.escape(str(payload.get('log', '')))}</code>"
+                "</div></div>"
+            )
 
-            # ------------------------------------------------
-            # Exact meaningful outputs from the original code
-            # ------------------------------------------------
-            if stage == "bundle_adjustment":
-                display(
-                    self.widgets.HTML(
-                        "<b>Bundle-adjustment residuals</b>"
-                        "<div style='color:#666;margin:4px 0 8px;'>"
-                        "Initial and final camera residual statistics "
-                        "from the original ASP residual files."
-                        "</div>"
-                    )
-                )
-                display(
-                    payload["table"]
-                )
-                display(
-                    self.widgets.HTML(
-                        "<b>Saved table:</b> "
-                        f"<code>{html.escape(str(payload['csv']))}</code>"
-                        "<br><b>Detailed log:</b> "
-                        f"<code>{html.escape(str(payload['log']))}</code>"
-                    )
-                )
+        elif stage == "preliminary_stereo":
+            info = payload["point_cloud_info"]
+            info_df = pd.DataFrame([{
+                "Pair": payload.get("pair", ""),
+                "Algorithm": payload.get("algorithm", ""),
+                "Cost mode": payload.get("cost_mode", ""),
+                "Correlation kernel": payload.get("corr_kernel", ""),
+                "Subpixel kernel": payload.get("subpixel_kernel", ""),
+                "Raster size": f"{info['Width']} × {info['Height']}",
+                "Bands": info["Bands"],
+                "Point cloud": str(payload["point_cloud"]),
+            }])
+            panel.value = (
+                "<div style='padding:10px;'><b>Preliminary stereo result</b>"
+                + self._dataframe_html(info_df)
+                + "<div style='margin-top:9px;'><b>Output prefix:</b> "
+                f"<code>{html.escape(str(payload.get('prefix', '')))}</code><br>"
+                "<b>Detailed log:</b> "
+                f"<code>{html.escape(str(payload.get('log', '')))}</code></div></div>"
+            )
 
-            elif stage == "preliminary_stereo":
-                lines = [
-                    "============================================================",
-                    "INITIAL STEREO CORRELATION",
-                    "============================================================",
-                    f"Pair          : {payload['pair']}",
-                    f"Algorithm     : {payload.get('algorithm', '')}",
-                    f"Cost mode     : {payload.get('cost_mode', '')}",
-                    f"CK : SK       : {payload.get('corr_kernel', '')} : {payload.get('subpixel_kernel', '')}",
-                    f"Xcorr thresh. : {payload.get('xcorr_threshold', '')}",
-                    f"Subpixel mode : {payload.get('subpixel_mode', '')}",
-                    f"Left image    : {payload['left']}",
-                    f"Right image   : {payload['right']}",
-                    f"Output prefix : {payload['prefix']}",
-                    "============================================================",
-                    "",
-                    "Preliminary stereo point cloud completed:",
-                    f"  {payload['point_cloud']}",
-                ]
+        elif stage == "preliminary_dem":
+            info = payload["dem_info"]
+            dem_df = pd.DataFrame([{
+                "Target CRS": info.get("CRS", ""),
+                "Resolution (m)": payload.get("resolution_m", info.get("Pixel X", "")),
+                "NoData": payload.get("nodata", ""),
+                "Target EPSG": payload.get("target_epsg", ""),
+                "Output DEM": str(payload.get("dem", "")),
+            }])
+            plot = payload.get("plot") or {}
 
-                display(
-                    self._display_original_style_block(
-                        "Original-style preliminary stereo result",
-                        lines,
-                    )
-                )
-
-                info = payload[
-                    "point_cloud_info"
-                ]
-
-                display(
-                    pd.DataFrame(
-                        [
-                            {
-                                "Raster size": (
-                                    f"{info['Width']} × "
-                                    f"{info['Height']}"
-                                ),
-                                "Bands": info["Bands"],
-                                "Point cloud": str(
-                                    payload[
-                                        "point_cloud"
-                                    ]
-                                ),
-                            }
-                        ]
-                    )
-                )
-
-                display(
-                    self.widgets.HTML(
-                        "<b>Detailed log:</b> "
-                        f"<code>{html.escape(str(payload['log']))}</code>"
-                    )
-                )
-
-            elif stage == "preliminary_dem":
-                info = payload["dem_info"]
-
-                lines = [
-                    "============================================================",
-                    "GENERATE PRELIMINARY ALIGNMENT DEM",
-                    "============================================================",
-                    f"Input point cloud : {payload.get('point_cloud', '')}",
-                    f"Target CRS        : {info['CRS']}",
-                    f"Resolution        : {info['Pixel X']:g} m",
-                    f"Output DEM        : {payload['dem']}",
-                    "============================================================",
-                ]
-
-                display(
-                    self._display_original_style_block(
-                        "Original-style DEM summary",
-                        lines,
-                    )
+            # Background-thread display(fig) is unreliable in some JupyterLab
+            # versions. Embed the saved PNG directly, exactly as for mapproject,
+            # so the preliminary DEM always remains visible after the run.
+            plot_html = ""
+            png_path = Path(plot.get("png", "")) if plot.get("png") else None
+            if png_path is not None and png_path.is_file():
+                encoded = base64.b64encode(png_path.read_bytes()).decode("ascii")
+                plot_html = (
+                    "<div style='margin-top:14px;'>"
+                    "<div style='font-size:14px;font-weight:700;margin-bottom:8px;'>"
+                    "Preliminary DSM preview</div>"
+                    f"<img src='data:image/png;base64,{encoded}' "
+                    "style='max-width:100%;height:auto;border:1px solid #cfd6df;"
+                    "border-radius:2px;background:white;'/>"
+                    "</div>"
                 )
 
-                display(
-                    payload["plot"]["figure"]
+            panel.value = (
+                "<div style='padding:10px;'><b>Preliminary DSM</b>"
+                + self._dataframe_html(dem_df)
+                + "<div style='margin-top:9px;'>"
+                f"<b>Saved PNG:</b> <code>{html.escape(str(plot.get('png', '')))}</code><br>"
+                f"<b>Saved PDF:</b> <code>{html.escape(str(plot.get('pdf', '')))}</code><br>"
+                f"<b>Detailed log:</b> <code>{html.escape(str(payload.get('log', '')))}</code>"
+                "</div>"
+                + plot_html
+                + "</div>"
+            )
+
+        elif stage == "lidar_alignment":
+            result = payload["alignment_results"]
+            important = "<br>".join(
+                html.escape(str(line)) for line in result.get("important_lines", [])
+            ) or "No parsed diagnostic lines were available."
+            alignment_df = pd.DataFrame([{
+                "Reference DEM": str(payload.get("reference", "")),
+                "Preliminary DSM": str(payload.get("source", "")),
+                "Max displacement (m)": payload.get("max_displacement_m", ""),
+                "Iterations": payload.get("iterations", ""),
+                "Transform": str(payload.get("transform", "")),
+            }])
+            matrix_html = ""
+            matrix = result.get("matrix")
+            if matrix is not None:
+                matrix_df = pd.DataFrame(
+                    matrix,
+                    index=["row 1", "row 2", "row 3", "row 4"],
+                    columns=["col 1", "col 2", "col 3", "col 4"],
+                ).reset_index().rename(columns={"index": "Matrix row"})
+                matrix_html = (
+                    "<div style='margin-top:12px;'><b>Saved 4 × 4 transform matrix</b></div>"
+                    + self._dataframe_html(matrix_df)
+                )
+            panel.value = (
+                "<div style='padding:10px;'><b>Preliminary DEM alignment</b>"
+                + self._dataframe_html(alignment_df)
+                + "<div style='margin-top:10px;padding:9px;background:#fafafa;"
+                "border:1px solid #e3e3e3;line-height:1.5;'><b>Important pc_align output</b><br>"
+                + important + "</div>"
+                + matrix_html
+                + "<div style='margin-top:9px;'><b>Detailed log:</b> "
+                f"<code>{html.escape(str(payload.get('log', '')))}</code></div></div>"
+            )
+
+        elif stage == "camera_transform":
+            transform_df = pd.DataFrame([{
+                "Input transform": str(payload.get("transform", "")),
+                "Aligned camera prefix": str(payload.get("prefix", "")),
+                "Operation": "Apply existing pc_align transform only",
+            }])
+            panel.value = (
+                "<div style='padding:10px;'><b>✓ Alignment transform applied to bundle-adjusted cameras.</b>"
+                + self._dataframe_html(transform_df)
+                + "<div style='margin-top:8px;color:#555;'>No additional camera optimization is performed.</div>"
+                + "<div style='margin-top:8px;'><b>Detailed log:</b> "
+                f"<code>{html.escape(str(payload.get('log', '')))}</code></div></div>"
+            )
+
+        elif stage == "map_projection":
+            plot = payload.get("plot") or {}
+
+            # Render the saved PNG directly inside the HTML result panel.  This is
+            # more reliable than display(fig) from the background preprocessing
+            # worker and keeps the preview visible after the run completes.
+            plot_html = ""
+            png_path = Path(plot.get("png", "")) if plot.get("png") else None
+            if png_path is not None and png_path.is_file():
+                encoded = base64.b64encode(png_path.read_bytes()).decode("ascii")
+                plot_html = (
+                    "<div style='margin-top:14px;'>"
+                    "<div style='font-size:14px;font-weight:700;margin-bottom:8px;'>"
+                    "Map-projected image preview</div>"
+                    f"<img src='data:image/png;base64,{encoded}' "
+                    "style='max-width:100%;height:auto;border:1px solid #cfd6df;"
+                    "border-radius:2px;background:white;'/>"
+                    "</div>"
                 )
 
-                display(
-                    self.widgets.HTML(
-                        "<b>Saved PNG:</b> "
-                        f"<code>{html.escape(str(payload['plot']['png']))}</code>"
-                        "<br><b>Saved PDF:</b> "
-                        f"<code>{html.escape(str(payload['plot']['pdf']))}</code>"
-                        "<br><b>Detailed log:</b> "
-                        f"<code>{html.escape(str(payload['log']))}</code>"
-                    )
+            # Map projection has one ASP log per view (A/B/C), stored under the
+            # payload key 'logs'.  Show all available logs instead of looking for
+            # the non-existent singular 'log' key.
+            logs = payload.get("logs") or {}
+            if isinstance(logs, dict) and logs:
+                logs_html = "<br>".join(
+                    f"<b>{html.escape(str(view))} log:</b> "
+                    f"<code>{html.escape(str(path))}</code>"
+                    for view, path in logs.items()
                 )
+            else:
+                logs_html = "Not available"
 
-            elif stage == "lidar_alignment":
-                result = payload[
-                    "alignment_results"
-                ]
+            panel.value = (
+                "<div style='padding:10px;'><b>Map-projected image outputs</b>"
+                + self._dataframe_html(payload.get("table"))
+                + "<div style='margin-top:9px;line-height:1.5;'>"
+                f"<b>Target CRS:</b> EPSG:{html.escape(str(payload.get('target_epsg', '')))}<br>"
+                f"<b>Mapproject resolution:</b> {html.escape(str(payload.get('resolution_m', '')))} m<br>"
+                f"<b>Threads:</b> {html.escape(str(payload.get('threads', '')))}<br>"
+                "<b>QC display extent:</b> common A/B/C intersection (GeoTIFF outputs are unchanged)<br>"
+                f"<b>Saved PNG:</b> <code>{html.escape(str(plot.get('png', '')))}</code><br>"
+                f"<b>Saved PDF:</b> <code>{html.escape(str(plot.get('pdf', '')))}</code><br>"
+                f"<b>Projection DEM:</b> <code>{html.escape(str(payload.get('mapproject_dem', '')))}</code><br>"
+                f"<b>Detailed ASP logs:</b><br>{logs_html}"
+                "</div>"
+                + plot_html
+                + "</div>"
+            )
 
-                lines = [
-                    "============================================================",
-                    "PRELIMINARY DEM ALIGNMENT",
-                    "============================================================",
-                    f"Reference LiDAR DSM : {payload['reference']}",
-                    f"Preliminary DSM     : {payload['source']}",
-                    f"Output transform    : {payload['transform']}",
-                    "============================================================",
-                    "",
-                ]
+        if restored and status == "completed":
+            panel.value = (
+                "<div style='margin:8px 10px 0;padding:8px 10px;border-left:4px solid #2e7d32;"
+                "background:#f4fbf4;color:#444;font-size:12px;'>"
+                "<b>✓ Restored from the existing project.</b> The tables, diagnostics, and previews below "
+                "were rebuilt from products already on disk; no ASP command was rerun."
+                "</div>" + panel.value
+            )
 
-                lines.extend(
-                    result[
-                        "important_lines"
-                    ]
-                )
-
-                display(
-                    self._display_original_style_block(
-                        "Important pc_align output",
-                        lines,
-                    )
-                )
-
-                matrix = result["matrix"]
-
-                if matrix is not None:
-                    matrix_df = pd.DataFrame(
-                        matrix,
-                        index=[
-                            "row 1",
-                            "row 2",
-                            "row 3",
-                            "row 4",
-                        ],
-                        columns=[
-                            "col 1",
-                            "col 2",
-                            "col 3",
-                            "col 4",
-                        ],
-                    )
-
-                    display(
-                        self.widgets.HTML(
-                            "<b>Saved 4 × 4 transform matrix</b>"
-                        )
-                    )
-                    display(matrix_df)
-
-                display(
-                    self.widgets.HTML(
-                        "<b>Transform file:</b> "
-                        f"<code>{html.escape(str(payload['transform']))}</code>"
-                        "<br><b>Detailed log:</b> "
-                        f"<code>{html.escape(str(payload['log']))}</code>"
-                    )
-                )
-
-            elif stage == "camera_transform":
-                lines = [
-                    "============================================================",
-                    "APPLY ALIGNMENT TRANSFORM TO CAMERAS",
-                    "============================================================",
-                    f"Input transform : {payload['transform']}",
-                    f"Output prefix   : {payload['prefix']}",
-                ]
-
-                display(
-                    self._display_original_style_block(
-                        "Camera-transform result",
-                        lines,
-                    )
-                )
-
-                display(
-                    payload["table"]
-                )
-
-                display(
-                    self.widgets.HTML(
-                        "<b>Detailed log:</b> "
-                        f"<code>{html.escape(str(payload['log']))}</code>"
-                    )
-                )
-
-            elif stage == "map_projection":
-                display(
-                    self.widgets.HTML(
-                        "<b>Map-projected image outputs</b>"
-                    )
-                )
-                display(
-                    payload["table"]
-                )
-                display(
-                    payload["plot"]["figure"]
-                )
-                display(
-                    self.widgets.HTML(
-                        "<b>Target CRS validated:</b> "
-                        f"EPSG:{int(payload['target_epsg'])}"
-                        "<br><b>QC display extent:</b> common A/B/C intersection "
-                        "(GeoTIFF outputs are unchanged)"
-                        "<br><b>Saved PNG:</b> "
-                        f"<code>{html.escape(str(payload['plot']['png']))}</code>"
-                        "<br><b>Saved PDF:</b> "
-                        f"<code>{html.escape(str(payload['plot']['pdf']))}</code>"
-                        "<br><b>Projection DEM:</b> "
-                        f"<code>{html.escape(str(payload['mapproject_dem']))}</code>"
-                    )
-                )
-
-        # Do not force the user away from an earlier tab after it has
-        # completed. Only a newly running step automatically opens.
+        # Do not force the user away from an earlier tab after completion.
+        # Only a newly running step automatically opens.
 
     # --------------------------------------------------------
     # PRE-PROCESSING ACTION
     # --------------------------------------------------------
     def _on_pre_processing(self, _):
+        # Clear the previous failure immediately when the user retries. The new
+        # run should never remain visually marked as failed until it finishes.
+        if not self._execution_busy():
+            self.preprocess_summary.value = ""
+            self.preprocess_summary_details.selected_index = None
+            self.preprocess_progress.bar_style = ""
+            self._reset_preprocess_stage_tabs(self._selected_preprocess_stages())
+            controls = self._execution_control_groups.get("preprocessing")
+            if controls:
+                controls["status"].value = (
+                    "<span style='color:#1565c0;font-size:12px;'>Starting new run; previous error cleared.</span>"
+                )
+        self._launch_background_execution(
+            "preprocessing", "ASP pre-processing", self._run_pre_processing_task
+        )
+
+    def _run_pre_processing_task(self):
         self.preprocess_summary.value = ""
         self.preprocess_progress.bar_style = ""
         self.run_preprocessing.disabled = True
 
-        self._reset_preprocess_stage_tabs()
+        selected_stages = self._selected_preprocess_stages()
+        self._reset_preprocess_stage_tabs(selected_stages)
 
         try:
-            if not getattr(self, "_reference_dem_ready", False):
+            run_all = self.preprocess_run_mode.value == "all"
+
+            if run_all and not getattr(self, "_reference_dem_ready", False):
                 raise ValueError(
-                    "Prepare and inspect the reference DEMs first. "
-                    "ASP bundle adjustment has not started."
+                    "Prepare and inspect the reference DEMs first for a full "
+                    "pre-processing run. To rerun an individual stage, switch "
+                    "Run mode to 'Run one step'."
                 )
 
             settings = self._build_settings()
-            processing = self._build_pre_processing_settings()
+            processing = self._build_pre_processing_settings(
+                required_stages=selected_stages
+            )
 
+            selected_labels = [
+                self._preprocess_stage_labels[stage]
+                for stage in selected_stages
+            ]
             self._set_preprocess_progress(
                 1,
-                "Starting ASP bundle adjustment",
+                (
+                    "Starting complete ASP pre-processing"
+                    if run_all
+                    else f"Starting {selected_labels[0]}"
+                ),
             )
 
             result = run_pre_processing(
                 settings,
                 processing,
-                progress_callback=(
-                    self._set_preprocess_progress
-                ),
-                result_callback=(
-                    self._update_preprocess_stage_result
-                ),
+                progress_callback=self._set_preprocess_progress,
+                result_callback=self._update_preprocess_stage_result,
+                stages=None if run_all else selected_stages,
             )
 
             self.last_pre_processing = result
-
             paths = result["paths"]
 
-            map_lines = "<br>".join(
-                (
-                    f"<code>{view}: "
-                    f"{html.escape(str(paths['mapprojected'][view]))}"
-                    "</code>"
+            output_lines = []
+            selected_set = set(selected_stages)
+
+            if "bundle_adjustment" in selected_set:
+                output_lines.append(
+                    "<b>Bundle-adjust prefix:</b> "
+                    f"<code>{html.escape(str(paths['ba_prefix']))}</code>"
                 )
-                for view in settings.image_names
+            if "preliminary_stereo" in selected_set:
+                output_lines.append(
+                    "<b>Preliminary point cloud:</b> "
+                    f"<code>{html.escape(str(paths['prelim_point_cloud']))}</code>"
+                )
+            if "preliminary_dem" in selected_set:
+                output_lines.append(
+                    "<b>Preliminary DSM:</b> "
+                    f"<code>{html.escape(str(paths['prelim_dem']))}</code>"
+                )
+            if "lidar_alignment" in selected_set:
+                output_lines.append(
+                    "<b>Alignment transform:</b> "
+                    f"<code>{html.escape(str(paths['align_transform']))}</code>"
+                )
+            if "camera_transform" in selected_set:
+                output_lines.append(
+                    "<b>Aligned camera prefix:</b> "
+                    f"<code>{html.escape(str(paths['aligned_ba_prefix']))}</code>"
+                )
+            if "map_projection" in selected_set:
+                map_lines = "<br>".join(
+                    f"<code>{view}: {html.escape(str(paths['mapprojected'][view]))}</code>"
+                    for view in settings.image_names
+                )
+                output_lines.append(
+                    "<b>Map-projected images:</b><br>" + map_lines
+                )
+
+            mode_text = (
+                "Complete six-stage chain"
+                if run_all
+                else "Single-stage rerun / experiment"
             )
 
+            self.preprocess_summary_details.selected_index = None
             self.preprocess_summary.value = (
-                "<div style='margin:10px 0;"
-                "padding:10px;border-left:4px "
+                "<div style='margin:10px 0;padding:10px;border-left:4px "
                 "solid #2e7d32;background:#f4fbf4;'>"
                 "<b>✓ Pre-processing completed.</b><br>"
-                "Use the six tabs below to inspect the result "
-                "of every original pre-processing step.<br><br>"
-                "<b>Alignment reference:</b> "
-                f"<code>{html.escape(processing.alignment_dem)}</code><br>"
-                "<b>Map-projection reference:</b> "
-                f"<code>{html.escape(processing.mapproject_dem)}</code><br><br>"
-                f"<b>Preliminary pair:</b> "
-                f"{html.escape(paths['pair'])}<br>"
-                f"<b>Preliminary algorithm:</b> "
-                f"{html.escape(processing.prelim_stereo_algorithm)}<br>"
-                f"<b>Preliminary CK:SK:</b> "
-                f"{processing.prelim_corr_kernel}:{processing.prelim_subpixel_kernel}<br>"
-                "<b>Preliminary DSM:</b> "
-                f"<code>{html.escape(str(paths['prelim_dem']))}</code><br>"
-                "<b>Alignment transform:</b> "
-                f"<code>{html.escape(str(paths['align_transform']))}</code>"
-                "<br><br><b>Map-projected images:</b><br>"
-                f"{map_lines}<br><br>"
-                "<b>Detailed ASP logs:</b> "
-                f"<code>{html.escape(str(paths['log_dir']))}</code>"
+                f"<b>Run mode:</b> {html.escape(mode_text)}<br>"
+                "<b>Executed:</b> "
+                + html.escape(" → ".join(selected_labels))
+                + "<br>"
+                f"<b>Camera model:</b> {html.escape(_camera_model_label(processing.camera_model))}<br>"
+                f"<b>ASP session:</b> <code>-t {html.escape(paths['session_type'])}</code><br>"
+                f"<b>Preliminary pair:</b> {html.escape(paths['pair'])}<br><br>"
+                + "<br>".join(output_lines)
+                + "<br><br><b>Detailed ASP logs:</b> "
+                f"<code>{html.escape(str(paths['log_dir']))}</code><br>"
+                "<b>Run summary log:</b> "
+                f"<code>{html.escape(str(result['summary_log']))}</code>"
                 "</div>"
             )
 
-            # The tab outputs already contain rendered static figures.
-            plt.close(
-                result[
-                    "preliminary_plot"
-                ]["figure"]
-            )
-            plt.close(
-                result[
-                    "map_plot"
-                ]["figure"]
-            )
+            for key in ("preliminary_plot", "map_plot"):
+                payload = result.get(key)
+                if payload is not None and payload.get("figure") is not None:
+                    plt.close(payload["figure"])
 
-            self.preprocess_progress.bar_style = (
-                "success"
-            )
+            self.preprocess_progress.bar_style = "success"
 
+        except WorkflowCancelled as exc:
+            self.preprocess_progress.bar_style = "warning"
+            try:
+                settings = self._build_settings()
+                log_dir = _processing_log_dir(settings)
+            except Exception:
+                log_dir = Path("(log path unavailable)")
+            self.preprocess_summary_details.selected_index = 0
+            self.preprocess_summary.value = (
+                "<div style='margin:10px 0;padding:10px;border-left:4px "
+                "solid #d28b00;background:#fffaf0;'>"
+                "<b>■ Pre-processing stopped by user.</b><br>"
+                f"{html.escape(str(exc))}<br><br>"
+                "Completed upstream stages are preserved. A command interrupted mid-write "
+                "may have partial output files; enable <b>Overwrite existing outputs</b> "
+                "before rerunning that same step if ASP reports that its prefix already exists."
+                "<br><b>Detailed ASP logs:</b> "
+                f"<code>{html.escape(str(log_dir))}</code>"
+                "</div>"
+            )
+            raise
         except Exception as exc:
-            self.preprocess_progress.bar_style = (
-                "danger"
-            )
+            self.preprocess_progress.bar_style = "danger"
 
             try:
                 settings = self._build_settings()
-                log_dir = (
-                    _processing_log_dir(
-                        settings
-                    )
-                )
+                log_dir = _processing_log_dir(settings)
             except Exception:
-                log_dir = Path(
-                    "(log path unavailable)"
-                )
+                log_dir = Path("(log path unavailable)")
 
+            self.preprocess_summary_details.selected_index = 0
             self.preprocess_summary.value = (
-                "<div style='margin:10px 0;"
-                "padding:10px;border-left:4px "
+                "<div style='margin:10px 0;padding:10px;border-left:4px "
                 "solid #b00020;background:#fff4f4;'>"
                 "<b>✗ Pre-processing stopped.</b><br>"
                 f"{html.escape(type(exc).__name__ + ': ' + str(exc))}"
-                "<br><br>"
-                "Any tabs completed before the error remain available "
-                "for inspection."
+                "<br><br>Any stages completed before the error remain on disk. "
+                "Switch to <b>Run one step</b> to rerun only the failed stage "
+                "after correcting its settings."
                 "<br><b>Detailed ASP logs:</b> "
                 f"<code>{html.escape(str(log_dir))}</code>"
                 "</div>"
             )
 
         finally:
-            self.run_preprocessing.disabled = False
+            self._refresh_preprocess_run_button_state()
 
     # --------------------------------------------------------
     # POINT-CLOUD ACTION
     # --------------------------------------------------------
     def _on_point_cloud(self, _):
+        if not self._execution_busy():
+            self.point_cloud_summary.value = ""
+            self.point_cloud_summary_details.selected_index = None
+            self.point_cloud_results.children = ()
+            self.point_cloud_progress.bar_style = ""
+            controls = self._execution_control_groups.get("point_cloud")
+            if controls:
+                controls["status"].value = (
+                    "<span style='color:#1565c0;font-size:12px;'>Starting new run; previous error cleared.</span>"
+                )
+        self._launch_background_execution(
+            "point_cloud", "Point-cloud reconstruction", self._run_point_cloud_task
+        )
+
+    def _run_point_cloud_task(self):
         self.point_cloud_summary.value = ""
         self.point_cloud_results.children = ()
         self.point_cloud_progress.bar_style = ""
@@ -7794,6 +12098,7 @@ class FullProjectSetupUI(ProjectSetupUI):
             )
             final = self._build_final_settings()
 
+            self._runtime_begin("point_cloud", settings)
             result = run_point_cloud_reconstruction(
                 settings,
                 processing,
@@ -7802,6 +12107,7 @@ class FullProjectSetupUI(ProjectSetupUI):
                     self._set_point_cloud_progress
                 ),
             )
+            self._runtime_finish("point_cloud", settings)
 
             self.last_point_cloud = result
 
@@ -7815,11 +12121,14 @@ class FullProjectSetupUI(ProjectSetupUI):
                 ),
             )
 
+            self.point_cloud_summary_details.selected_index = None
             self.point_cloud_summary.value = (
                 "<div style='margin:10px 0;"
                 "padding:10px;border-left:4px "
                 "solid #2e7d32;background:#f4fbf4;'>"
                 "<b>✓ Point-cloud reconstruction completed.</b><br>"
+                f"<b>Camera model:</b> {html.escape(_camera_model_label(processing.camera_model))}<br>"
+                f"<b>ASP session:</b> <code>-t {html.escape(_camera_model_session(settings, processing))}</code><br>"
                 f"<b>Mode:</b> "
                 f"{html.escape(final.stereo_mode)}<br>"
                 f"<b>Algorithm:</b> "
@@ -7836,8 +12145,22 @@ class FullProjectSetupUI(ProjectSetupUI):
             )
 
             if self.auto_generate_dsm.value:
-                self._on_final_dsm(None)
+                self._pending_auto_final_dsm = True
 
+        except WorkflowCancelled as exc:
+            self.point_cloud_progress.bar_style = "warning"
+            self.point_cloud_summary_details.selected_index = 0
+            self.point_cloud_summary.value = (
+                "<div style='margin:10px 0;padding:10px;border-left:4px "
+                "solid #d28b00;background:#fffaf0;'>"
+                "<b>■ Point-cloud reconstruction stopped by user.</b><br>"
+                f"{html.escape(str(exc))}<br><br>"
+                "Completed stereo configurations remain on disk. If the interrupted "
+                "configuration left partial outputs, enable overwrite before rerunning it."
+                "</div>"
+            )
+            self._pending_auto_final_dsm = False
+            raise
         except Exception as exc:
             self.point_cloud_progress.bar_style = (
                 "danger"
@@ -7855,6 +12178,7 @@ class FullProjectSetupUI(ProjectSetupUI):
                     "(log path unavailable)"
                 )
 
+            self.point_cloud_summary_details.selected_index = 0
             self.point_cloud_summary.value = (
                 "<div style='margin:10px 0;"
                 "padding:10px;border-left:4px "
@@ -7867,12 +12191,129 @@ class FullProjectSetupUI(ProjectSetupUI):
             )
 
         finally:
-            self.run_point_cloud.disabled = False
+            self.run_point_cloud.disabled = self._execution_busy()
+
+    # --------------------------------------------------------
+    # OPTIONAL CO-REGISTRATION ACTION
+    # --------------------------------------------------------
+    def _on_open_coregistration_notebook(self, _):
+        """Create a handoff file and open the bundled xDEM notebook in a new tab."""
+        from IPython.display import Javascript, display
+
+        try:
+            settings = self._build_settings()
+            template = (
+                Path(__file__).resolve().parent
+                / "coregistration"
+                / "Coregistration_Process-Final-withPlannimetric.ipynb"
+            )
+            if not template.is_file():
+                raise FileNotFoundError(f"Co-registration notebook not found:\n{template}")
+
+            final_csv = settings.metadata_dir / "final_dsm_products.csv"
+            final_dsms = []
+            if final_csv.is_file():
+                try:
+                    df = pd.read_csv(final_csv)
+                    if "DSM" in df.columns:
+                        final_dsms = [str(v) for v in df["DSM"].dropna().tolist()]
+                except Exception:
+                    final_dsms = []
+
+            handoff = settings.project_dir / "coregistration_handoff.json"
+            handoff.write_text(
+                json.dumps(
+                    {
+                        "project_name": settings.project_name,
+                        "project_dir": str(settings.project_dir),
+                        "final_dsm_products_csv": str(final_csv) if final_csv.is_file() else "",
+                        "final_dsms": final_dsms,
+                        "alignment_reference_dem": self.alignment_dem.value.strip(),
+                        "map_projection_dem": self.mapproject_dem.value.strip(),
+                        "note": (
+                            "Optional xDEM co-registration is outside ASP. Configure the stable-area "
+                            "and reference-DEM inputs in the co-registration notebook before running it."
+                        ),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            self.coregistration_status.value = (
+                "<div style='margin:7px 0;padding:9px 11px;border-left:4px solid #6a3d9a;"
+                "background:#f7f2fb;color:#444;font-size:12px;line-height:1.5;'>"
+                "<b>✓ Co-registration handoff prepared.</b><br>"
+                f"<b>Notebook:</b> <code>{html.escape(str(template))}</code><br>"
+                f"<b>Project handoff:</b> <code>{html.escape(str(handoff))}</code><br>"
+                "The notebook opens separately because co-registration is an optional post-processing "
+                "step outside ASP. Review its INPUTS cell before execution."
+                "</div>"
+            )
+
+            # Build the browser URL from the directory of the notebook that is
+            # currently open, not from Python's process working directory.  A
+            # Jupyter server can be rooted above the workflow folder (for
+            # example, /home/user while the workflow lives in
+            # /home/user/Final Software).  Using Path.cwd() in that situation
+            # drops the workflow-folder component and produces a 404.
+            notebook_name = template.name
+            script = f"""
+            (function() {{
+                const notebookName = {json.dumps(template.name)};
+                const path = window.location.pathname;
+                let url = null;
+
+                function encodedChildPath(name) {{
+                    return 'coregistration/' + encodeURIComponent(name);
+                }}
+
+                if (path.includes('/lab/tree/')) {{
+                    const currentDir = path.substring(0, path.lastIndexOf('/') + 1);
+                    url = currentDir + encodedChildPath(notebookName);
+                }} else if (path.includes('/notebooks/')) {{
+                    const currentDir = path.substring(0, path.lastIndexOf('/') + 1);
+                    url = currentDir + encodedChildPath(notebookName);
+                }} else {{
+                    // Fallback for unusual frontends: resolve relative to the
+                    // current page directory.
+                    url = new URL(encodedChildPath(notebookName), window.location.href).href;
+                }}
+
+                window.open(url, '_blank');
+            }})();
+            """
+            with self.coregistration_output:
+                display(Javascript(script))
+
+        except Exception as exc:
+            self.coregistration_status.value = (
+                "<div style='margin:7px 0;padding:9px 11px;border-left:4px solid #b00020;"
+                "background:#fff4f4;color:#444;font-size:12px;'>"
+                "<b>✗ Co-registration notebook could not be opened.</b><br>"
+                + html.escape(type(exc).__name__ + ": " + str(exc)) +
+                "</div>"
+            )
 
     # --------------------------------------------------------
     # FINAL DSM ACTION
     # --------------------------------------------------------
     def _on_final_dsm(self, _):
+        if not self._execution_busy():
+            self.final_dsm_summary.value = ""
+            self.final_dsm_summary_details.selected_index = None
+            self.final_dsm_results.children = ()
+            self.final_dsm_progress.bar_style = ""
+            controls = self._execution_control_groups.get("final_dsm")
+            if controls:
+                controls["status"].value = (
+                    "<span style='color:#1565c0;font-size:12px;'>Starting new run; previous error cleared.</span>"
+                )
+        self._launch_background_execution(
+            "final_dsm", "Final DSM generation", self._run_final_dsm_task
+        )
+
+    def _run_final_dsm_task(self):
         self.final_dsm_summary.value = ""
         self.final_dsm_results.children = ()
         self.final_dsm_progress.bar_style = ""
@@ -7885,6 +12326,7 @@ class FullProjectSetupUI(ProjectSetupUI):
             )
             final = self._build_final_settings()
 
+            self._runtime_begin("final_dsm", settings)
             result = generate_final_dsms(
                 settings,
                 processing,
@@ -7893,6 +12335,7 @@ class FullProjectSetupUI(ProjectSetupUI):
                     self._set_final_dsm_progress
                 ),
             )
+            self._runtime_finish("final_dsm", settings)
 
             self.last_final_dsm = result
 
@@ -7908,16 +12351,44 @@ class FullProjectSetupUI(ProjectSetupUI):
             for product in result[
                 "products"
             ]:
-                output = self.widgets.Output()
+                plot = product.get("plot") or {}
+                png_path = Path(plot.get("png", ""))
+                image_html = ""
 
-                with output:
-                    self.display_fn(
-                        product["plot"][
-                            "figure"
-                        ]
+                if png_path.is_file():
+                    encoded = base64.b64encode(
+                        png_path.read_bytes()
+                    ).decode("ascii")
+                    image_html = (
+                        "<div style='padding:10px;'>"
+                        "<div style='font-size:14px;font-weight:700;margin-bottom:8px;'>"
+                        "Final DSM + intersection error</div>"
+                        f"<img src='data:image/png;base64,{encoded}' "
+                        "style='max-width:100%;height:auto;"
+                        "border:1px solid #d7dde5;border-radius:2px;'/>"
+                        "<div style='margin-top:9px;font-size:12px;line-height:1.5;'>"
+                        f"<b>Final DSM:</b> <code>{html.escape(str(product.get('dem', '')))}</code><br>"
+                        f"<b>Intersection error:</b> <code>{html.escape(str(product.get('error_image', '') or 'Not generated'))}</code><br>"
+                        f"<b>Saved PNG:</b> <code>{html.escape(str(plot.get('png', '')))}</code><br>"
+                        f"<b>Saved PDF:</b> <code>{html.escape(str(plot.get('pdf', '')))}</code><br>"
+                        f"<b>Detailed log:</b> <code>{html.escape(str(product.get('log', '')))}</code>"
+                        "</div></div>"
+                    )
+                else:
+                    image_html = (
+                        "<div style='padding:10px;color:#8a5a00;'>"
+                        "The final DSM was generated, but the QC preview PNG could not be found.<br>"
+                        f"<b>Final DSM:</b> <code>{html.escape(str(product.get('dem', '')))}</code><br>"
+                        f"<b>Intersection error:</b> <code>{html.escape(str(product.get('error_image', '') or 'Not generated'))}</code>"
+                        "</div>"
                     )
 
-                children.append(output)
+                children.append(
+                    self.widgets.HTML(
+                        value=image_html,
+                        layout=self.widgets.Layout(width="100%"),
+                    )
+                )
                 titles.append(
                     product["product_tag"]
                 )
@@ -7938,6 +12409,7 @@ class FullProjectSetupUI(ProjectSetupUI):
                 tabs,
             )
 
+            self.final_dsm_summary_details.selected_index = None
             self.final_dsm_summary.value = (
                 "<div style='margin:10px 0;"
                 "padding:10px;border-left:4px "
@@ -7969,6 +12441,19 @@ class FullProjectSetupUI(ProjectSetupUI):
                 "success"
             )
 
+        except WorkflowCancelled as exc:
+            self.final_dsm_progress.bar_style = "warning"
+            self.final_dsm_summary_details.selected_index = 0
+            self.final_dsm_summary.value = (
+                "<div style='margin:10px 0;padding:10px;border-left:4px "
+                "solid #d28b00;background:#fffaf0;'>"
+                "<b>■ Final DSM generation stopped by user.</b><br>"
+                f"{html.escape(str(exc))}<br><br>"
+                "Already completed DSM products are preserved. Rerun after enabling overwrite "
+                "if the interrupted point2dem output is incomplete."
+                "</div>"
+            )
+            raise
         except Exception as exc:
             self.final_dsm_progress.bar_style = (
                 "danger"
@@ -7986,6 +12471,7 @@ class FullProjectSetupUI(ProjectSetupUI):
                     "(log path unavailable)"
                 )
 
+            self.final_dsm_summary_details.selected_index = 0
             self.final_dsm_summary.value = (
                 "<div style='margin:10px 0;"
                 "padding:10px;border-left:4px "
@@ -7998,7 +12484,7 @@ class FullProjectSetupUI(ProjectSetupUI):
             )
 
         finally:
-            self.run_final_dsm.disabled = False
+            self.run_final_dsm.disabled = self._execution_busy()
 
 
 # Override only the entry point so the original v0.5 interface becomes

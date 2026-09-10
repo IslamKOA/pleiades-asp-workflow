@@ -5,7 +5,7 @@ This module reproduces the supplied R workflow in Python:
 
 1. Read and validate an AOI.
 2. transform the AOI to Lambert-93 (EPSG:2154).
-3. Query the IGN Géoplateforme WFS tile index.
+3. Query the IGN Géoplateforme WFS tile index, with direct WMS-raster fallback.
 4. Select MNS/DSM tiles intersecting the AOI or a user-defined buffer.
 5. Download and cache the native 0.5 m GeoTIFF tiles.
 6. Check missing and unreadable files.
@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import csv
 import json
+import tempfile
 import math
 import shutil
 import time
@@ -33,6 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Iterable
+from xml.etree import ElementTree as ET
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -49,8 +51,37 @@ from shapely.geometry import mapping, box
 
 LAMBERT93 = "EPSG:2154"
 DEFAULT_OUTPUT_CRS = "EPSG:4326"
-WFS_ENDPOINT = "https://data.geopf.fr/wfs/ows"
+
+# Official IGN Géoplateforme WFS endpoint.
+#
+# Keep this as a single official route.  The previously tested
+# ``/wfs/geoserver/ows`` fallback returns HTTP 404 and is intentionally
+# not used.
+WFS_ENDPOINTS = (
+    "https://data.geopf.fr/wfs/ows",
+)
+
+# Official/current IGN MNS LiDAR-HD tile-index identifier.
 MNS_LAYER = "IGNF_MNS-LIDAR-HD:dalle"
+
+# Compatibility spelling observed in catalog metadata.  It is only tried if
+# the official identifier is rejected by the server.
+MNS_LAYER_CANDIDATES = (
+    MNS_LAYER,
+    "IGNF_MNS_LIDAR-HD:dalle",
+)
+
+# Direct WMS-raster fallback. The WFS service above is only used as a tile
+# index; its records ultimately point to this raster service. If IGN
+# temporarily depublishes or breaks the WFS namespace, the workflow can
+# reconstruct the regular 1-km LiDAR-HD grid from the Lambert-93 AOI and
+# request the same native 0.5-m Float32 GeoTIFF tiles directly.
+WMS_RASTER_ENDPOINT = "https://data.geopf.fr/wms-r"
+MNS_WMS_LAYER = "IGNF_LIDAR-HD_MNS_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93"
+IGN_TILE_SIZE_M = 1000.0
+IGN_TILE_WIDTH_PX = 2000
+IGN_TILE_HEIGHT_PX = 2000
+
 FLOAT_NODATA = np.nan
 
 
@@ -154,83 +185,336 @@ def _selection_geometry(
     )
 
 
+def _decode_wfs_payload(raw: bytes, output_format: str) -> dict:
+    """Decode an IGN WFS response into a GeoJSON-like feature collection.
+
+    IGN normally supports ``application/json`` for WFS GetFeature, while the
+    current LiDAR-HD guidance also demonstrates ``GML2``.  Supporting both
+    makes the downloader tolerant of server-side output-format changes.
+    """
+    if output_format == "application/json":
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                "The IGN WFS JSON response could not be decoded."
+            ) from error
+    else:
+        # GeoPandas/Fiona can parse the GML2 feature response reliably.  Write
+        # it to a temporary file because support for arbitrary in-memory file
+        # objects differs across Fiona / pyogrio versions.
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".gml") as tmp:
+                tmp.write(raw)
+                tmp.flush()
+                gdf = gpd.read_file(tmp.name)
+            data = json.loads(gdf.to_json())
+        except Exception as error:
+            raise RuntimeError(
+                "The IGN WFS GML2 response could not be decoded."
+            ) from error
+
+    if "features" not in data:
+        raise RuntimeError(
+            "The IGN WFS response does not contain a feature collection."
+        )
+    return data
+
+
+def _discover_mns_layers(endpoint: str, timeout: int = 60) -> list[str]:
+    """Discover MNS LiDAR-HD tile-index layer names from WFS GetCapabilities.
+
+    IGN has changed technical layer identifiers over time.  This helper is used
+    only as a fallback after the known current/legacy identifiers fail.  It
+    keeps the workflow robust to future publication-name changes.
+    """
+    params = {
+        "SERVICE": "WFS",
+        "VERSION": "2.0.0",
+        "REQUEST": "GetCapabilities",
+    }
+    url = f"{endpoint}?{urllib.parse.urlencode(params)}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "IGN-LiDARHD-Python-workflow/1.2",
+            "Accept": "application/xml, text/xml, */*",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+        root = ET.fromstring(raw)
+    except Exception:
+        return []
+
+    names: list[str] = []
+    for element in root.iter():
+        if element.tag.split("}")[-1] != "Name":
+            continue
+        value = (element.text or "").strip()
+        lower = value.lower()
+        if (
+            value
+            and "mns" in lower
+            and "lidar-hd" in lower
+            and ("dalle" in lower or "tile" in lower)
+        ):
+            names.append(value)
+
+    # Stable order, no duplicates.
+    return list(dict.fromkeys(names))
+
+
 def _wfs_geojson(
     selection_l93: gpd.GeoDataFrame,
     layer: str = MNS_LAYER,
     count: int = 10000,
 ) -> dict:
+    """Query the IGN LiDAR-HD MNS WFS tile index with resilient fallbacks.
+
+    The function first tries the official IGN technical layer name, then the
+    known catalog spelling variant, on the official Géoplateforme WFS route.
+    If those fail, it asks GetCapabilities for any currently published MNS
+    LiDAR-HD ``dalle`` layer and retries with the discovered identifier.
+
+    No ASP processing is started by this function.
     """
-    Query the IGN WFS tile index and return its GeoJSON response.
+    minx, miny, maxx, maxy = [float(v) for v in selection_l93.total_bounds]
 
-    The query is restricted to the selection bounding box in EPSG:2154.
-    """
-    minx, miny, maxx, maxy = selection_l93.total_bounds
+    crs_variants = [
+        LAMBERT93,
+        "urn:ogc:def:crs:EPSG::2154",
+    ]
+    output_formats = [
+        "application/json",
+        "GML2",
+    ]
 
-    params = {
-        "SERVICE": "WFS",
-        "VERSION": "2.0.0",
-        "REQUEST": "GetFeature",
-        "TYPENAMES": layer,
-        "SRSNAME": LAMBERT93,
-        "BBOX": f"{minx},{miny},{maxx},{maxy},{LAMBERT93}",
-        "OUTPUTFORMAT": "application/json",
-        "COUNT": str(count),
-    }
+    # Keep caller-supplied layer first, then the known IGN current/legacy names.
+    layer_variants = list(dict.fromkeys([layer, *MNS_LAYER_CANDIDATES]))
+    errors: list[str] = []
 
-    url = f"{WFS_ENDPOINT}?{urllib.parse.urlencode(params)}"
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "IGN-LiDARHD-Python-workflow/1.0"},
+    def _try_layer(endpoint: str, layer_name: str):
+        for crs_name in crs_variants:
+            for output_format in output_formats:
+                params = {
+                    "SERVICE": "WFS",
+                    "VERSION": "2.0.0",
+                    "REQUEST": "GetFeature",
+                    "TYPENAMES": layer_name,
+                    "SRSNAME": crs_name,
+                    "BBOX": f"{minx},{miny},{maxx},{maxy},{crs_name}",
+                    "OUTPUTFORMAT": output_format,
+                    "COUNT": str(count),
+                }
+                url = f"{endpoint}?{urllib.parse.urlencode(params)}"
+                request = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": "IGN-LiDARHD-Python-workflow/1.2",
+                        "Accept": "application/json, application/gml+xml, text/xml, */*",
+                    },
+                )
+
+                try:
+                    with urllib.request.urlopen(request, timeout=120) as response:
+                        raw = response.read()
+                    data = _decode_wfs_payload(raw, output_format)
+                    if data.get("features") is not None:
+                        return data
+                except urllib.error.HTTPError as error:
+                    try:
+                        body = error.read().decode("utf-8", errors="replace")
+                    except Exception:
+                        body = ""
+                    # Keep the diagnostic concise.  The interface should not be
+                    # flooded with an entire XML exception document.
+                    body = " ".join(body.split())[:500]
+                    errors.append(
+                        f"HTTP {error.code} | endpoint={endpoint} | "
+                        f"layer={layer_name} | CRS={crs_name} | "
+                        f"format={output_format} | {body or 'no server message'}"
+                    )
+                except urllib.error.URLError as error:
+                    errors.append(
+                        f"Network error | endpoint={endpoint} | "
+                        f"layer={layer_name} | CRS={crs_name} | "
+                        f"format={output_format} | {error}"
+                    )
+                    time.sleep(0.5)
+                except RuntimeError as error:
+                    errors.append(
+                        f"Decode error | endpoint={endpoint} | "
+                        f"layer={layer_name} | CRS={crs_name} | "
+                        f"format={output_format} | {error}"
+                    )
+        return None
+
+    # 1) Try the official and compatibility identifiers on the official route.
+    for endpoint in WFS_ENDPOINTS:
+        for layer_name in layer_variants:
+            data = _try_layer(endpoint, layer_name)
+            if data is not None:
+                return data
+
+    # 2) Last-resort discovery from GetCapabilities.  This protects against a
+    # future IGN technical-name change without silently selecting an unrelated
+    # elevation layer.
+    for endpoint in WFS_ENDPOINTS:
+        discovered = _discover_mns_layers(endpoint)
+        for layer_name in discovered:
+            if layer_name in layer_variants:
+                continue
+            data = _try_layer(endpoint, layer_name)
+            if data is not None:
+                return data
+
+    detail = "\n".join(f"  - {item}" for item in errors[-6:])
+    raise RuntimeError(
+        "IGN WFS tile-index query failed. The workflow tried the official MNS "
+        "LiDAR-HD layer identifier, the known catalog spelling variant, and "
+        "GetCapabilities discovery on the official IGN WFS endpoint. "
+        "No ASP processing has started.\n"
+        f"Endpoint: {WFS_ENDPOINTS[0]}\n"
+        f"Requested layer: {layer}\n"
+        "The request reached the IGN service, but no usable MNS LiDAR-HD tile "
+        "index could be obtained. This can indicate a temporary IGN "
+        "service/publication problem or a server-side layer-name change.\n"
+        f"Recent IGN responses:\n{detail}"
     )
 
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as error:
-        raise RuntimeError(
-            f"IGN WFS request failed with HTTP {error.code}:\n{url}"
-        ) from error
-    except urllib.error.URLError as error:
-        raise RuntimeError(
-            f"Could not reach the IGN WFS service:\n{url}\n{error}"
-        ) from error
+def _direct_wms_tile_records(
+    selection_l93: gpd.GeoDataFrame,
+) -> tuple[gpd.GeoDataFrame, list[TileRecord]]:
+    """Build native IGN MNS tile requests directly from the Lambert-93 grid.
 
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RuntimeError(
-            "The IGN WFS response could not be decoded as GeoJSON."
-        ) from error
+    This is a fallback for periods when the IGN WFS tile-index namespace is
+    unavailable. It requests the same native 0.5 m Float32 GeoTIFF raster
+    layer referenced by the WFS tile records, so the downstream scientific
+    processing remains unchanged.
+    """
+    if selection_l93.crs is None:
+        raise ValueError("Selection geometry has no CRS.")
 
-    if "features" not in data:
+    selection = selection_l93.to_crs(LAMBERT93)
+    minx, miny, maxx, maxy = [float(v) for v in selection.total_bounds]
+
+    # IGN native 0.5-m LiDAR-HD rasters are published on a 1-km grid with
+    # outer bounds offset by 0.25 m from integer-kilometre lines.
+    x_left = math.floor((minx + 0.25) / IGN_TILE_SIZE_M) * IGN_TILE_SIZE_M - 0.25
+    y_bottom = math.floor((miny - 0.25) / IGN_TILE_SIZE_M) * IGN_TILE_SIZE_M + 0.25
+
+    selection_union = (
+        selection.geometry.union_all()
+        if hasattr(selection.geometry, "union_all")
+        else selection.geometry.unary_union
+    )
+
+    rows: list[dict] = []
+    records: list[TileRecord] = []
+    eps = 1e-7
+
+    x = x_left
+    while x < maxx - eps:
+        y = y_bottom
+        while y < maxy - eps:
+            right = x + IGN_TILE_SIZE_M
+            top = y + IGN_TILE_SIZE_M
+            geom = box(x, y, right, top)
+
+            if geom.intersection(selection_union).area > 0:
+                x_code = int(round((x + 0.25) / 1000.0))
+                y_code = int(round((top - 0.25) / 1000.0))
+                stem = (
+                    f"LHD_FXX_{x_code:04d}_{y_code:04d}_"
+                    "MNS_O_0M50_LAMB93_IGN69"
+                )
+                name_download = f"{stem}.tif"
+
+                params = {
+                    "SERVICE": "WMS",
+                    "VERSION": "1.3.0",
+                    "EXCEPTIONS": "text/xml",
+                    "REQUEST": "GetMap",
+                    "LAYERS": MNS_WMS_LAYER,
+                    "FORMAT": "image/geotiff",
+                    "STYLES": "",
+                    "CRS": LAMBERT93,
+                    "BBOX": f"{x:.2f},{y:.2f},{right:.2f},{top:.2f}",
+                    "WIDTH": str(IGN_TILE_WIDTH_PX),
+                    "HEIGHT": str(IGN_TILE_HEIGHT_PX),
+                    "FILENAME": name_download,
+                }
+                url = f"{WMS_RASTER_ENDPOINT}?{urllib.parse.urlencode(params)}"
+
+                rows.append({
+                    "name_download": name_download,
+                    "url": url,
+                    "source": "direct_wms_fallback",
+                    "geometry": geom,
+                })
+                records.append(TileRecord(name_download=name_download, url=url))
+
+            y += IGN_TILE_SIZE_M
+        x += IGN_TILE_SIZE_M
+
+    if not records:
         raise RuntimeError(
-            "The IGN WFS response does not contain a GeoJSON 'features' collection."
+            "Could not construct any direct IGN MNS WMS tile request for the AOI."
         )
 
-    return data
+    tile_index = gpd.GeoDataFrame(rows, geometry="geometry", crs=LAMBERT93)
+    tile_index = tile_index.sort_values("name_download").reset_index(drop=True)
+    records = sorted(records, key=lambda r: r.name_download)
+    return tile_index, records
 
 
 def _load_and_select_tiles(
     selection_l93: gpd.GeoDataFrame,
     layer: str = MNS_LAYER,
 ) -> tuple[gpd.GeoDataFrame, list[TileRecord]]:
-    """Load the tile index and retain tiles intersecting the selection geometry."""
-    data = _wfs_geojson(
-        selection_l93=selection_l93,
-        layer=layer,
-    )
+    """Load/select MNS tiles, with direct official WMS-raster fallback.
 
-    features = data.get("features", [])
-
-    if not features:
-        raise RuntimeError(
-            "The IGN WFS returned no MNS/DSM tiles for the requested area."
+    Normal route: use the IGN WFS tile index and the URLs it publishes.
+    Fallback route: if the WFS namespace is unavailable or returns no features,
+    reconstruct the regular 1-km grid and request the same native MNS raster
+    layer directly through IGN WMS-raster.
+    """
+    try:
+        data = _wfs_geojson(
+            selection_l93=selection_l93,
+            layer=layer,
         )
+        features = data.get("features", [])
 
-    tile_index = gpd.GeoDataFrame.from_features(
-        features,
-        crs=LAMBERT93,
-    )
+        if not features:
+            raise RuntimeError(
+                "The IGN WFS returned no MNS/DSM tiles for the requested area."
+            )
+
+        tile_index = gpd.GeoDataFrame.from_features(
+            features,
+            crs=LAMBERT93,
+        )
+    except Exception as wfs_error:
+        print(
+            "IGN WFS tile index is unavailable; switching automatically to "
+            "the official IGN MNS WMS-raster fallback."
+        )
+        print(f"WFS diagnostic: {str(wfs_error).splitlines()[0]}")
+        try:
+            return _direct_wms_tile_records(selection_l93)
+        except Exception as wms_error:
+            raise RuntimeError(
+                "IGN MNS tile discovery failed through both routes. "
+                "The WFS tile index was unavailable and the direct WMS-raster "
+                "fallback could not construct usable tile requests. No ASP "
+                "processing has started.\n"
+                f"WFS: {wfs_error}\n"
+                f"WMS fallback: {wms_error}"
+            ) from wms_error
 
     if tile_index.crs is None:
         tile_index = tile_index.set_crs(LAMBERT93)

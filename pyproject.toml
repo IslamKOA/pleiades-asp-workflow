@@ -4,11 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pleiades-asp-workflow"
-version = "1.0.6"
+version = "1.5.4"
 description = "Notebook-first Pléiades/Pléiades Neo/SPOT DSM workflow with integrated reference-DEM preparation and cross-platform NASA Ames Stereo Pipeline runner."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
 authors = [
     {name = "Islam Koa"}
 ]
@@ -41,6 +40,8 @@ dependencies = [
     "notebook",
     "ipykernel",
     "ipywidgets",
+    "psutil>=5.9",
+    "xdem",
     "rpcm==1.4.10",
 ]
 
@@ -61,6 +62,7 @@ parallel_stereo = "pleiades_asp_runner.cli:main"
 point2dem = "pleiades_asp_runner.cli:main"
 pc_align = "pleiades_asp_runner.cli:main"
 mapproject = "pleiades_asp_runner.cli:main"
+cam_test = "pleiades_asp_runner.cli:main"
 pc_merge = "pleiades_asp_runner.cli:main"
 dem_geoid = "pleiades_asp_runner.cli:main"
 
@@ -78,4 +80,6 @@ pleiades_asp_workflow = [
     "interface_bundle/data/*",
     "interface_bundle/figures/*",
     "interface_bundle/examples/*",
+    "interface_bundle/coregistration/*",
+    "interface_bundle/original_notebooks/*",
 ]
