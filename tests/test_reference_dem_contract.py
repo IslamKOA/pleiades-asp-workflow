@@ -19,7 +19,7 @@ def test_direct_native_aggregation():
 def test_coverage_gate():
     s=REF.read_text()
     assert "def _validate_reference_coverage" in s
-    assert "incomplete rectangular coverage" in s
+    assert "Processing will continue" in s
     assert "mapproject_coverage_percent" in s
 
 def test_retries():

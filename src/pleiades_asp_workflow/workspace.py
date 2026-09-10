@@ -23,10 +23,12 @@ RUNTIME_ITEMS = (
     "figures",
     "data",
     "examples",
+    "coregistration",
 )
 
 DEVELOPER_ITEMS = (
     "01_Pleiades_ASP_Workflow_Developer.ipynb",
+    "original_notebooks",
 )
 
 

@@ -9,3 +9,6 @@ scipy
 numpy
 pandas
 matplotlib
+
+psutil>=5.9
+xdem

@@ -33,7 +33,7 @@ from pleiades_asp_runner import (
     runtime_to_host_path,
 )
 
-__version__ = "1.0.6"
+__version__ = "1.5.4"
 
 
 def _runtime_source_path(path):

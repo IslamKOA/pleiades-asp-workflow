@@ -12,7 +12,7 @@ import tarfile
 import urllib.request
 from pathlib import Path, PureWindowsPath
 
-PACKAGE_VERSION = "1.0.6"
+PACKAGE_VERSION = "1.5.4"
 DEFAULT_ASP_VERSION = "3.3.0"
 
 REQUIRED_TOOLS = (
@@ -21,6 +21,7 @@ REQUIRED_TOOLS = (
     "point2dem",
     "pc_align",
     "mapproject",
+    "cam_test",
     "pc_merge",
     "dem_geoid",
 )
@@ -38,6 +39,7 @@ RUNTIME_PROBES = (
     "point2dem",
     "pc_align",
     "mapproject",
+    "cam_test",
 )
 
 # Common Linux runtime libraries used by older ASP binary distributions.

@@ -1,0 +1,8 @@
+include README.md
+include CHANGELOG.md
+include VALIDATION.md
+include LICENSE
+include CITATION.cff
+include THIRD_PARTY_NOTICES.md
+include PUBLICATION_CHECKLIST.md
+recursive-include src/pleiades_asp_workflow/interface_bundle *.py *.ipynb *.txt *.tac *.png *.pdf *.md

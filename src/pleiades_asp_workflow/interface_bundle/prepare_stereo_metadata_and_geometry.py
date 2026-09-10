@@ -7,19 +7,19 @@ Prepare metadata, overlap pairs, and stereo geometry for ASP-ready images.
 Input folder example:
 
 Stereo:
-    A.tif, A.XML, DIM_A.XML
-    B.tif, B.XML, DIM_B.XML
+    A.tif, RPC_A.XML, DIM_A.XML
+    B.tif, RPC_B.XML, DIM_B.XML
 
 Tri-stereo:
-    A.tif, A.XML, DIM_A.XML
-    B.tif, B.XML, DIM_B.XML
-    C.tif, C.XML, DIM_C.XML
+    A.tif, RPC_A.XML, DIM_A.XML
+    B.tif, RPC_B.XML, DIM_B.XML
+    C.tif, RPC_C.XML, DIM_C.XML
 
 Custom stereo pairs:
-    A_1.tif, A_1.XML, DIM_A_1.XML
-    B_1.tif, B_1.XML, DIM_B_1.XML
-    A_2.tif, A_2.XML, DIM_A_2.XML
-    B_2.tif, B_2.XML, DIM_B_2.XML
+    A_1.tif, RPC_A_1.XML, DIM_A_1.XML
+    B_1.tif, RPC_B_1.XML, DIM_B_1.XML
+    A_2.tif, RPC_A_2.XML, DIM_A_2.XML
+    B_2.tif, RPC_B_2.XML, DIM_B_2.XML
 
 Outputs:
     <out_prefix>_overlap_pairs.csv
@@ -59,6 +59,17 @@ def safe_float(value):
         return None
 
 
+def prepared_rpc_path(img_dir, image_id):
+    """Prefer RPC_<id>.XML while accepting the legacy <id>.XML name."""
+    preferred = os.path.join(img_dir, f"RPC_{image_id}.XML")
+    legacy = os.path.join(img_dir, f"{image_id}.XML")
+    if os.path.isfile(preferred):
+        return preferred
+    if os.path.isfile(legacy):
+        return legacy
+    return preferred
+
+
 def extract_image_id_from_dim(dim_filename):
     """
     Extract image ID from DIM filename.
@@ -94,7 +105,7 @@ def find_image_ids(img_dir):
             image_id = os.path.splitext(filename)[0]
 
             tif_path = os.path.join(img_dir, f"{image_id}.tif")
-            rpc_path = os.path.join(img_dir, f"{image_id}.XML")
+            rpc_path = prepared_rpc_path(img_dir, image_id)
 
             if os.path.isfile(tif_path) and os.path.isfile(rpc_path):
                 image_ids.append(image_id)
@@ -183,7 +194,7 @@ def build_footprints(img_dir, image_ids):
 
     for image_id in image_ids:
         img_path = os.path.join(img_dir, f"{image_id}.tif")
-        rpc_path = os.path.join(img_dir, f"{image_id}.XML")
+        rpc_path = prepared_rpc_path(img_dir, image_id)
 
         try:
             rpc = get_rpc_params(rpc_path)
@@ -257,7 +268,7 @@ def extract_dim_metadata(root, xml_path):
         "image_id": image_id,
         "dim_file": os.path.basename(xml_path),
         "tif_file": f"{image_id}.tif",
-        "rpc_file": f"{image_id}.XML",
+        "rpc_file": f"RPC_{image_id}.XML",
     }
 
     target_tags = {
