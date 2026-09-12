@@ -1,27 +1,38 @@
 cff-version: 1.2.0
+
 message: >-
   The associated Earth and Space Science article and permanent Research Data
-  Gouv DOI are not yet available. If you use this software before publication, please cite this
-  software release and update the citation to the archived DOI once available.
+  Gouv DOI are not yet available. If you use this software before publication,
+  please cite this software release and update the citation to the archived DOI
+  once available.
+
 title: "Pléiades ASP Workflow"
+
 type: software
+
 version: "1.5.4"
+
 date-released: "2026-09-08"
+
 authors:
   - family-names: "Koa"
     given-names: "Islam"
-    affiliation: "Université Grenoble Alpes, CNRS, IRD, INRAE, Grenoble INP, IGE, Grenoble, France"
+    affiliation: "Université Grenoble Alpes, CNRS, IRD, INRAE, Grenoble INP, IGE, Grenoble, France; An-Najah National University, Nablus, Palestine"
+
   - family-names: "Recking"
     given-names: "Alain"
     affiliation: "Université Grenoble Alpes, CNRS, IRD, INRAE, Grenoble INP, IGE, Grenoble, France"
+
   - family-names: "Borgniet"
     given-names: "Laurent"
     affiliation: "Université Grenoble Alpes, INRAE, LESSEM, Grenoble, France"
+
 abstract: >-
   A notebook-first workflow for generating high-resolution digital surface
-  models from Pléiades, Pléiades NEO, and SPOT optical stereo imagery using
+  models from Pléiades, Pléiades NEO, and SPOT 6/7 optical stereo imagery using
   the NASA Ames Stereo Pipeline, with integrated reference-DEM preparation,
   quality control, restartable processing, and optional co-registration.
+
 keywords:
   - "Ames Stereo Pipeline"
   - "Pléiades"
