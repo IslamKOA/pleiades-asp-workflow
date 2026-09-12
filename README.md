@@ -389,4 +389,4 @@ This software is distributed under the **CeCILL-B Free Software License Agreemen
 
 See the [LICENSE](LICENSE) file for the full license text.
 
-Third-party software and data remain governed by their own terms regardless of the license ultimately selected for this workflow.
+Third-party software and data remain governed by their own respective licenses and terms.
