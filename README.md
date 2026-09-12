@@ -385,6 +385,8 @@ The archived version of **Pléiades ASP Workflow** is available through **Resear
 
 ## License
 
-A project license has **not yet been selected** for this release. The `LICENSE` file is intentionally left empty pending the institutional/publication decision.
+This software is distributed under the **CeCILL-B Free Software License Agreement** (`CECILL-B`).
+
+See the [LICENSE](LICENSE) file for the full license text.
 
 Third-party software and data remain governed by their own terms regardless of the license ultimately selected for this workflow.
