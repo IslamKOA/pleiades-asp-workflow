@@ -1,6 +1,13 @@
 # Pléiades ASP Workflow - Windows bootstrap installer
 # --------------------------------------------------
 
+# ASP version: default to 3.3.0 unless user overrides it
+$AspVersion = if ($env:PLEIADES_ASP_VERSION) {
+    $env:PLEIADES_ASP_VERSION
+} else {
+    "3.3.0"
+}
+
 $ErrorActionPreference = "Stop"
 
 Write-Host ""
@@ -112,9 +119,9 @@ python -m pip install --no-deps "rpcm==1.4.10"
 # --------------------------------------------------
 
 Write-Host ""
-Write-Host "[4/5] Installing Ames Stereo Pipeline 3.3.0..."
+Write-Host "[4/5] Installing Ames Stereo Pipeline $AspVersion..."
 
-asp-install 3.3.0
+asp-install $AspVersion
 
 
 # --------------------------------------------------
