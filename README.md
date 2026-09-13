@@ -33,18 +33,26 @@ For reproducibility of the associated study, the reference processing version is
 
 ## Installation
 
-Python **3.10 or newer** is required; Python 3.11 is recommended.
+Python **3.10 or newer** is required; Python **3.11 is recommended**.
 
-Create a clean environment:
+### 1. Create a clean Conda environment
+
+The following commands are the same on Linux and Windows:
 
 ```bash
 conda create -n pleiades_asp python=3.11 pip -y
 conda activate pleiades_asp
 ```
 
-### Install from the downloaded/research archive
+---
 
-After extracting this archive, enter the package directory and run:
+### 2. Install Pléiades ASP Workflow
+
+#### Linux
+
+##### From the downloaded / research archive
+
+After extracting the archive, enter the package directory and run:
 
 ```bash
 python -m pip install .
@@ -52,9 +60,7 @@ asp-install 3.3.0
 pleiades-workflow-init
 ```
 
-### Install from the development Git repository
-
-When the Git repository is accessible, the same setup can be performed with:
+##### From the development Git repository
 
 ```bash
 python -m pip install git+https://github.com/IslamKOA/pleiades-asp-workflow.git
@@ -62,18 +68,66 @@ asp-install 3.3.0
 pleiades-workflow-init
 ```
 
-`asp-install` automatically retrieves the requested ASP binary release from the official **NeoGeographyToolkit/StereoPipeline** release source and installs/configures it in the workflow's separate managed ASP location. ASP is **not bundled inside this repository/archive**, and no manual ASP download/configuration is required when using this installer.
+---
 
-The notebook workspace is created at:
+#### Windows
 
-```text
-~/Pleiades_ASP_Workflow/
+For Windows, the bootstrap installer automatically prepares the Windows-specific dependencies, installs **Pléiades ASP Workflow**, installs the requested ASP version, and initializes the workflow workspace.
+
+By default, the reference ASP version **3.3.0** is installed:
+
+```powershell
+irm "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" | iex
 ```
 
-Launch the public interface with:
+To use another ASP version, define it before running the installer. For example:
+
+```powershell
+$env:PLEIADES_ASP_VERSION = "3.4.0"
+irm "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" | iex
+```
+
+For reproducibility of the workflow described in the associated study, **ASP 3.3.0 is recommended**.
+
+> On Windows, ASP execution is handled through the workflow's WSL-based runner because the official Ames Stereo Pipeline distribution used by the workflow is the Linux binary distribution.
+
+---
+
+### 3. ASP installation
+
+`asp-install` retrieves the requested ASP release from the official
+**NeoGeographyToolkit/StereoPipeline** release source and installs it in the workflow's separate managed ASP location.
+
+ASP is **not bundled inside this repository or research archive**.
+
+The reference version used for this workflow is:
+
+```text
+ASP 3.3.0
+```
+
+On Linux, the ASP version is selected directly with:
 
 ```bash
-jupyter lab ~/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb
+asp-install 3.3.0
+```
+
+On Windows, version **3.3.0** is used automatically by the bootstrap installer unless another version is specified with `PLEIADES_ASP_VERSION`.
+
+---
+
+### 4. Launch the workflow
+
+The initialized notebook workspace is created automatically in the user's home directory:
+
+```text
+$HOME/Pleiades_ASP_Workflow/
+```
+
+The same launch command can be used from **Linux Bash** and **Windows PowerShell**:
+
+```bash
+jupyter lab "$HOME/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb"
 ```
 
 Then click:
