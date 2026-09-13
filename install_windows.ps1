@@ -1,13 +1,6 @@
 # Pléiades ASP Workflow - Windows bootstrap installer
 # --------------------------------------------------
 
-# ASP version: default to 3.3.0 unless user overrides it
-$AspVersion = if ($env:PLEIADES_ASP_VERSION) {
-    $env:PLEIADES_ASP_VERSION
-} else {
-    "3.3.0"
-}
-
 $ErrorActionPreference = "Stop"
 
 Write-Host ""
@@ -20,7 +13,7 @@ Write-Host ""
 # 1. Check Python
 # --------------------------------------------------
 
-Write-Host "[1/5] Checking Python..."
+Write-Host "[1/3] Checking Python..."
 
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     Write-Host ""
@@ -31,13 +24,17 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 
 python --version
 
+if ($LASTEXITCODE -ne 0) {
+    throw "Python check failed."
+}
+
 
 # --------------------------------------------------
 # 2. Check Git
 # --------------------------------------------------
 
 Write-Host ""
-Write-Host "[2/5] Checking Git..."
+Write-Host "[2/3] Checking Git..."
 
 $gitCommand = Get-Command git -ErrorAction SilentlyContinue
 
@@ -53,7 +50,6 @@ if (-not $gitCommand) {
 
         New-Item -ItemType Directory -Force -Path $gitRoot | Out-Null
 
-        # Query the official Git for Windows GitHub release
         $release = Invoke-RestMethod `
             -Uri "https://api.github.com/repos/git-for-windows/git/releases/latest"
 
@@ -89,7 +85,6 @@ if (-not $gitCommand) {
         throw "Portable Git installation failed."
     }
 
-    # Make Git available to this PowerShell session
     $env:PATH = "$(Join-Path $gitRoot 'cmd');$env:PATH"
 
     Write-Host "Git installed successfully."
@@ -97,45 +92,46 @@ if (-not $gitCommand) {
 
 git --version
 
+if ($LASTEXITCODE -ne 0) {
+    throw "Git check failed."
+}
+
 
 # --------------------------------------------------
 # 3. Install Pléiades ASP Workflow
 # --------------------------------------------------
 
 Write-Host ""
-Write-Host "[3/5] Installing Pléiades ASP Workflow..."
+Write-Host "[3/3] Installing Pléiades ASP Workflow..."
 
 python -m pip install --upgrade `
     "git+https://github.com/IslamKOA/pleiades-asp-workflow.git"
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Pléiades ASP Workflow installation failed."
+}
 
 Write-Host ""
 Write-Host "Installing Windows RPC support..."
 
 python -m pip install --upgrade geojson
+
+if ($LASTEXITCODE -ne 0) {
+    throw "geojson installation failed."
+}
+
 python -m pip install --no-deps "rpcm==1.4.10"
 
-# --------------------------------------------------
-# 4. Install ASP 3.3.0
-# --------------------------------------------------
-
-Write-Host ""
-Write-Host "[4/5] Installing Ames Stereo Pipeline $AspVersion..."
-
-asp-install $AspVersion
-
-
-# --------------------------------------------------
-# 5. Initialize workflow
-# --------------------------------------------------
-
-Write-Host ""
-Write-Host "[5/5] Initializing workflow..."
-
-pleiades-workflow-init
-
+if ($LASTEXITCODE -ne 0) {
+    throw "rpcm installation failed."
+}
 
 Write-Host ""
 Write-Host "=============================================="
-Write-Host " Installation completed successfully"
+Write-Host " Python package installation completed"
 Write-Host "=============================================="
+Write-Host ""
+Write-Host "Next run:"
+Write-Host "  asp-install 3.3.0"
+Write-Host "  pleiades-workflow-init"
 Write-Host ""
