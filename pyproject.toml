@@ -42,7 +42,7 @@ dependencies = [
     "ipywidgets",
     "psutil>=5.9",
     "xdem",
-    "rpcm==1.4.10",
+    "rpcm==1.4.10; sys_platform != 'win32'",
 ]
 
 [project.optional-dependencies]
