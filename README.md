@@ -60,7 +60,7 @@ asp-install 3.3.0
 pleiades-workflow-init
 ```
 
-##### From the development Git repository
+##### From the GitHub repository
 
 ```bash
 python -m pip install git+https://github.com/IslamKOA/pleiades-asp-workflow.git
@@ -93,30 +93,7 @@ For reproducibility of the workflow described in the associated study, **ASP 3.3
 
 ---
 
-### 3. ASP installation
-
-`asp-install` retrieves the requested ASP release from the official
-**NeoGeographyToolkit/StereoPipeline** release source and installs it in the workflow's separate managed ASP location.
-
-ASP is **not bundled inside this repository or research archive**.
-
-The reference version used for this workflow is:
-
-```text
-ASP 3.3.0
-```
-
-On Linux, the ASP version is selected directly with:
-
-```bash
-asp-install 3.3.0
-```
-
-On Windows, version **3.3.0** is used automatically by the bootstrap installer unless another version is specified with `PLEIADES_ASP_VERSION`.
-
----
-
-### 4. Launch the workflow
+### 3. Launch the workflow
 
 The initialized notebook workspace is created automatically in the user's home directory:
 
