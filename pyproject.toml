@@ -8,9 +8,13 @@ version = "1.5.4"
 description = "Notebook-first Pléiades/Pléiades Neo/SPOT DSM workflow with integrated reference-DEM preparation and cross-platform NASA Ames Stereo Pipeline runner."
 readme = "README.md"
 requires-python = ">=3.10"
+
 authors = [
-    {name = "Islam Koa"}
+    { name = "Islam Koa" }
 ]
+
+license = "CECILL-B"
+
 keywords = [
     "Ames Stereo Pipeline",
     "ASP",
