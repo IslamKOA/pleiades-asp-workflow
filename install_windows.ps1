@@ -101,6 +101,11 @@ Write-Host "[3/5] Installing Pléiades ASP Workflow..."
 python -m pip install --upgrade `
     "git+https://github.com/IslamKOA/pleiades-asp-workflow.git"
 
+Write-Host ""
+Write-Host "Installing Windows RPC support..."
+
+python -m pip install --upgrade geojson
+python -m pip install --no-deps "rpcm==1.4.10"
 
 # --------------------------------------------------
 # 4. Install ASP 3.3.0
