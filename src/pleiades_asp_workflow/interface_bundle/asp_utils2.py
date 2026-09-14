@@ -2857,7 +2857,21 @@ class FinalProcessingSettings:
     pc_merge_threads: int = 18
 
     final_dsm_resolution_m: float = 1.0
+
+    # Final point2dem triangulation-error filtering.
+    # Modes:
+    #   fixed      -> --max-valid-triangulation-error
+    #   percentile -> --remove-outliers-params
+    #   tukey      -> --use-tukey-outlier-removal
+    triangulation_filter_mode: str = "fixed"
+
+    # Fixed-threshold method used in the manuscript.
     max_valid_triangulation_error_m: float = 1.0
+
+    # ASP percentile-based method defaults: Q3 * 3.
+    remove_outliers_percentile: float = 75.0
+    remove_outliers_factor: float = 3.0
+
     final_dsm_threads: int = 0
     final_dsm_nodata: float = -9999.0
     final_dsm_compression: str = "Deflate"
@@ -7007,12 +7021,15 @@ def _plot_one_final_dsm(
 
     fig.tight_layout()
 
+    filter_tag = str(product.get("filter_tag", "filter"))
+
     safe_name = (
         f"{product['product_tag']}_"
         f"{settings.project_name}_"
         f"{_safe_algorithm_filename(product['algorithm'])}_"
         f"ck{product['correlation_kernel']}_"
         f"sk{product['subpixel_kernel']}_"
+        f"{filter_tag}_"
         "final_DSM"
     )
 
@@ -7052,11 +7069,9 @@ def generate_final_dsms(
     """
     Rasterize every currently selected final point cloud with point2dem.
     """
-    # Validate CRS/reference inputs and aligned processing state.
-    _final_common_paths(
-        settings,
-        processing,
-    )
+    # Final DSM generation reuses the existing point cloud(s).
+    # Map-projected images and bundle-adjustment products are not required
+    # once the selected point cloud has already been reconstructed.
 
     point_clouds = (
         _selected_point_clouds_for_dsm(
@@ -7123,11 +7138,35 @@ def generate_final_dsms(
                     f"ck{ck}_sk{sk}"
                 )
 
+                if final.triangulation_filter_mode == "fixed":
+                    filter_tag = (
+                        f"fixed_"
+                        f"{final.max_valid_triangulation_error_m:g}m"
+                    )
+                
+                elif final.triangulation_filter_mode == "percentile":
+                    filter_tag = (
+                        f"pct{final.remove_outliers_percentile:g}_"
+                        f"x{final.remove_outliers_factor:g}"
+                    )
+                
+                elif final.triangulation_filter_mode == "tukey":
+                    filter_tag = "tukey"
+                
+                else:
+                    raise ValueError(
+                        "Unknown triangulation-error filtering mode: "
+                        f"{final.triangulation_filter_mode}"
+                    )
+                
+                
                 dem_name = (
                     f"{product_tag}_"
                     f"{outname}-"
-                    f"{final.final_dsm_resolution_m}m"
+                    f"{final.final_dsm_resolution_m}m-"
+                    f"{filter_tag}"
                 )
+
 
                 dem_prefix = (
                     final_dsm_dir
@@ -7155,11 +7194,6 @@ def generate_final_dsms(
                 )
 
                 arguments = [
-                    "--max-valid-triangulation-error",
-                    (
-                        final
-                        .max_valid_triangulation_error_m
-                    ),
                     "--t_srs",
                     f"EPSG:{processing.target_epsg}",
                     "--tr",
@@ -7171,6 +7205,37 @@ def generate_final_dsms(
                     "--tif-compress",
                     final.final_dsm_compression,
                 ]
+
+
+                # --------------------------------------------------
+                # Triangulation-error outlier removal
+                # --------------------------------------------------
+                if final.triangulation_filter_mode == "fixed":
+                    arguments = [
+                        "--max-valid-triangulation-error",
+                        final.max_valid_triangulation_error_m,
+                        *arguments,
+                    ]
+
+                elif final.triangulation_filter_mode == "percentile":
+                    arguments = [
+                        "--remove-outliers-params",
+                        final.remove_outliers_percentile,
+                        final.remove_outliers_factor,
+                        *arguments,
+                    ]
+
+                elif final.triangulation_filter_mode == "tukey":
+                    arguments = [
+                        "--use-tukey-outlier-removal",
+                        *arguments,
+                    ]
+
+                else:
+                    raise ValueError(
+                        "Unknown triangulation-error filtering mode: "
+                        f"{final.triangulation_filter_mode}"
+                    )
 
                 if final.create_error_image:
                     arguments.append(
@@ -7211,6 +7276,7 @@ def generate_final_dsms(
                     "dem": expected_dem,
                     "error_image": error_image,
                     "log": log_file,
+                    "filter_tag": filter_tag,
                 }
 
                 product["plot"] = (
@@ -7250,6 +7316,19 @@ def generate_final_dsms(
                         "DSM": str(
                             item["dem"]
                         ),
+                        "Outlier filter": (
+                            final.triangulation_filter_mode
+                        ),
+                        "Filter parameter": (
+                            f"{final.max_valid_triangulation_error_m:g} m"
+                            if final.triangulation_filter_mode == "fixed"
+                            else (
+                                f"P{final.remove_outliers_percentile:g} x "
+                                f"{final.remove_outliers_factor:g}"
+                                if final.triangulation_filter_mode == "percentile"
+                                else "Q3 + 1.5 x IQR"
+                            )
+                        ),
                         "Intersection error": (
                             str(
                                 item["error_image"]
@@ -7281,13 +7360,29 @@ def generate_final_dsms(
                     "resolution_m": (
                         final.final_dsm_resolution_m
                     ),
-                    "max_valid_triangulation_error_m": (
-                        final
-                        .max_valid_triangulation_error_m
+
+                    "triangulation_filter_mode": (
+                        final.triangulation_filter_mode
                     ),
+
+                    "max_valid_triangulation_error_m": (
+                        final.max_valid_triangulation_error_m
+                    ),
+
+                    "remove_outliers_percentile": (
+                        final.remove_outliers_percentile
+                    ),
+
+                    "remove_outliers_factor": (
+                        final.remove_outliers_factor
+                    ),
+
                     "create_error_image": (
                         final.create_error_image
                     ),
+
+
+                    
                     "products": [
                         {
                             "product_tag": item[
@@ -8332,12 +8427,35 @@ class FullProjectSetupUI(ProjectSetupUI):
             )
         )
 
-        self.max_triangulation_error = (
-            widgets.FloatText(
-                value=1.0,
-                description="Max triangulation error:",
-                style=style,
-            )
+        self.triangulation_filter_mode = widgets.Dropdown(
+            options=[
+                ("Fixed threshold — study method", "fixed"),
+                ("ASP percentile — 3 × Q3", "percentile"),
+                ("Tukey — Q3 + 1.5 × IQR", "tukey"),
+            ],
+            value="fixed",
+            description="Outlier removal:",
+            style=style,
+        )
+
+        self.max_triangulation_error = widgets.FloatText(
+            value=1.0,
+            description="Max error (m):",
+            style=style,
+        )
+        
+        self.remove_outliers_percentile = widgets.FloatText(
+            value=75.0,
+            description="Percentile:",
+            style=style,
+            disabled=True,
+        )
+        
+        self.remove_outliers_factor = widgets.FloatText(
+            value=3.0,
+            description="Factor:",
+            style=style,
+            disabled=True,
         )
 
         self.create_error_image = (
@@ -8578,17 +8696,42 @@ class FullProjectSetupUI(ProjectSetupUI):
             self.auto_dsm_row,
         ]
 
+        # Named rows allow the interface to show only the parameters that
+        # belong to the selected point2dem outlier-removal method.
+        self.max_triangulation_error_row = self._row(
+            self.max_triangulation_error,
+            "Maximum valid triangulation error in metres. "
+            "The study and manuscript use a fixed threshold of 1.0 m.",
+        )
+
+        self.remove_outliers_percentile_row = self._row(
+            self.remove_outliers_percentile,
+            "Percentile of the triangulation-error distribution used by "
+            "ASP --remove-outliers-params. Default: 75 (Q3).",
+        )
+
+        self.remove_outliers_factor_row = self._row(
+            self.remove_outliers_factor,
+            "Multiplier applied to the selected percentile. "
+            "ASP default: 3, giving a threshold of 3 × Q3.",
+        )
+
         final_dsm_rows = [
             self._row(
                 self.final_dsm_resolution,
                 "Final point2dem resolution. "
-                "The uploaded tested run uses 1.0 m.",
+                "The tested workflow uses 1.0 m.",
             ),
             self._row(
-                self.max_triangulation_error,
-                "Maximum valid triangulation error. "
-                "The uploaded tested final run uses 1.0 m.",
+                self.triangulation_filter_mode,
+                "Select the point2dem triangulation-error outlier-removal method. "
+                "Fixed threshold reproduces the study method. "
+                "ASP percentile uses --remove-outliers-params. "
+                "Tukey uses Q3 + 1.5 × (Q3 - Q1).",
             ),
+            self.max_triangulation_error_row,
+            self.remove_outliers_percentile_row,
+            self.remove_outliers_factor_row,
             self._row(
                 self.create_error_image,
                 "Equivalent to point2dem --errorimage.",
@@ -8636,6 +8779,13 @@ class FullProjectSetupUI(ProjectSetupUI):
         self.run_final_dsm.on_click(
             self._on_final_dsm
         )
+        self.triangulation_filter_mode.observe(
+            self._on_triangulation_filter_mode_change,
+            names="value",
+        )
+
+        self._on_triangulation_filter_mode_change()
+
         self.open_coregistration_notebook.on_click(
             self._on_open_coregistration_notebook
         )
@@ -10172,6 +10322,40 @@ class FullProjectSetupUI(ProjectSetupUI):
         else:
             algorithm_tag = algorithm_choice
 
+        triangulation_filter_mode = str(
+            self.triangulation_filter_mode.value
+        )
+        max_triangulation_error = float(
+            self.max_triangulation_error.value
+        )
+        remove_outliers_percentile = float(
+            self.remove_outliers_percentile.value
+        )
+        remove_outliers_factor = float(
+            self.remove_outliers_factor.value
+        )
+
+        if triangulation_filter_mode == "fixed":
+            if max_triangulation_error <= 0:
+                raise ValueError(
+                    "Max triangulation error must be greater than 0 m "
+                    "when Fixed threshold is selected."
+                )
+        elif triangulation_filter_mode == "percentile":
+            if not (0 < remove_outliers_percentile < 100):
+                raise ValueError(
+                    "Percentile must be greater than 0 and less than 100."
+                )
+            if remove_outliers_factor <= 0:
+                raise ValueError(
+                    "Percentile outlier factor must be greater than 0."
+                )
+        elif triangulation_filter_mode != "tukey":
+            raise ValueError(
+                "Unknown triangulation-error filtering mode: "
+                f"{triangulation_filter_mode}"
+            )
+
         return FinalProcessingSettings(
             stereo_mode=self.final_mode.value,
             single_pairs=tuple(
@@ -10205,12 +10389,20 @@ class FullProjectSetupUI(ProjectSetupUI):
             final_dsm_resolution_m=float(
                 self.final_dsm_resolution.value
             ),
-            max_valid_triangulation_error_m=float(
-                self.max_triangulation_error.value
-            ),
+
+            triangulation_filter_mode=triangulation_filter_mode,
+
+            max_valid_triangulation_error_m=max_triangulation_error,
+
+            remove_outliers_percentile=remove_outliers_percentile,
+
+            remove_outliers_factor=remove_outliers_factor,
+
             final_dsm_threads=int(
                 self.final_dsm_threads.value
             ),
+
+            
             create_error_image=bool(
                 self.create_error_image.value
             ),
@@ -10784,6 +10976,30 @@ class FullProjectSetupUI(ProjectSetupUI):
         # custom-algorithm field in one deterministic callback.
         self._apply_algorithm_selection()
         self._rebuild_point_cloud_controls()
+
+    def _on_triangulation_filter_mode_change(self, change=None):
+        mode = self.triangulation_filter_mode.value
+
+        # Keep widget state consistent even when rows are hidden.
+        self.max_triangulation_error.disabled = (mode != "fixed")
+        self.remove_outliers_percentile.disabled = (mode != "percentile")
+        self.remove_outliers_factor.disabled = (mode != "percentile")
+
+        # Show only controls that are relevant to the selected method.
+        # Fixed: absolute threshold only.
+        self.max_triangulation_error_row.layout.display = (
+            "" if mode == "fixed" else "none"
+        )
+
+        # ASP percentile: percentile and multiplier only.
+        self.remove_outliers_percentile_row.layout.display = (
+            "" if mode == "percentile" else "none"
+        )
+        self.remove_outliers_factor_row.layout.display = (
+            "" if mode == "percentile" else "none"
+        )
+
+        # Tukey has no additional numeric parameters, so all three rows are hidden.
 
     def _on_kernel_selection_change(self, change=None):
         # Selecting/deselecting the custom-kernel option only controls
@@ -12409,6 +12625,22 @@ class FullProjectSetupUI(ProjectSetupUI):
                 tabs,
             )
 
+            if final.triangulation_filter_mode == "fixed":
+                filter_summary = (
+                    "Fixed threshold: "
+                    f"{final.max_valid_triangulation_error_m:g} m"
+                )
+            elif final.triangulation_filter_mode == "percentile":
+                filter_summary = (
+                    "ASP percentile: "
+                    f"P{final.remove_outliers_percentile:g} × "
+                    f"{final.remove_outliers_factor:g}"
+                )
+            elif final.triangulation_filter_mode == "tukey":
+                filter_summary = "Tukey: Q3 + 1.5 × IQR"
+            else:
+                filter_summary = final.triangulation_filter_mode
+
             self.final_dsm_summary_details.selected_index = None
             self.final_dsm_summary.value = (
                 "<div style='margin:10px 0;"
@@ -12416,9 +12648,9 @@ class FullProjectSetupUI(ProjectSetupUI):
                 "solid #2e7d32;background:#f4fbf4;'>"
                 "<b>✓ Final DSM generation completed.</b><br>"
                 f"<b>DSM resolution:</b> "
-                f"{final.final_dsm_resolution_m} m<br>"
-                "<b>Triangulation-error limit:</b> "
-                f"{final.max_valid_triangulation_error_m} m<br>"
+                f"{final.final_dsm_resolution_m:g} m<br>"
+                "<b>Triangulation-error filtering:</b> "
+                f"{html.escape(filter_summary)}<br>"
                 "<b>Saved product table:</b> "
                 f"<code>{html.escape(str(result['products_csv']))}</code>"
                 "<br><b>Figures:</b> "
