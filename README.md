@@ -55,7 +55,7 @@ conda activate pleiades_asp
 After extracting the archive, enter the package directory and run:
 
 ```bash
-python -m pip install .
+python -m pip install --upgrade .
 asp-install 3.3.0
 pleiades-workflow-init
 ```
