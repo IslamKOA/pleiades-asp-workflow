@@ -393,11 +393,11 @@ if ($LASTEXITCODE -ne 0) {
 
 
 # ==================================================
-# 3. Install Pléiades ASP Workflow
+# 3. Install / update Pléiades ASP Workflow
 # ==================================================
 
 Write-Host ""
-Write-Host "[3/6] Installing Pléiades ASP Workflow..."
+Write-Host "[3/6] Installing or updating Pléiades ASP Workflow..."
 
 
 python -m pip install --upgrade `
@@ -405,7 +405,7 @@ python -m pip install --upgrade `
 
 
 if ($LASTEXITCODE -ne 0) {
-    throw "Pléiades ASP Workflow installation failed."
+    throw "Pléiades ASP Workflow installation/update failed."
 }
 
 
@@ -572,11 +572,11 @@ if ($LASTEXITCODE -ne 0) {
 
 
 # ==================================================
-# 6. Initialize workflow
+# 6. Initialize or update workflow
 # ==================================================
 
 Write-Host ""
-Write-Host "[6/6] Initializing Pléiades ASP Workflow..."
+Write-Host "[6/6] Initializing or updating Pléiades ASP Workflow..."
 
 
 $WorkflowDir = Join-Path `
@@ -584,27 +584,20 @@ $WorkflowDir = Join-Path `
     "Pleiades_ASP_Workflow"
 
 
-$WorkflowNotebook = Join-Path `
-    $WorkflowDir `
-    "Pleiades_ASP_Workflow.ipynb"
+# The workspace command now handles both cases:
+#
+#   - New user:
+#       creates the complete workspace.
+#
+#   - Existing user:
+#       refreshes package-managed workflow files while
+#       preserving existing user data.
+#
+pleiades-workflow-init
 
 
-# Do not overwrite an existing initialized workspace.
-if (Test-Path $WorkflowNotebook) {
-
-    Write-Host ""
-    Write-Host "Workflow workspace already exists:"
-    Write-Host "  $WorkflowDir"
-    Write-Host ""
-    Write-Host "Existing workspace will be kept unchanged."
-
-} else {
-
-    pleiades-workflow-init
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Workflow initialization failed."
-    }
+if ($LASTEXITCODE -ne 0) {
+    throw "Workflow initialization/update failed."
 }
 
 
