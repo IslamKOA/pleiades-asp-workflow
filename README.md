@@ -65,7 +65,7 @@ pleiades-workflow-init
 ```bash
 python -m pip install --upgrade git+https://github.com/IslamKOA/pleiades-asp-workflow.git
 asp-install 3.3.0
-pleiades-workflow-init --update
+pleiades-workflow-init
 ```
 
 ---
