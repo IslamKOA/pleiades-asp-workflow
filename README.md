@@ -409,10 +409,10 @@ See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for attribution and redis
 
 ### Research software
 
-The archived version of **Pléiades ASP Workflow** is available through **Research Data Gouv**.
+The archived version of **Pléiades ASP Workflow** is available through **Recherche Data Gouv**.
 
-> **Koa, I., Recking, A., & Borgniet, L. (2026).** *Pléiades ASP Workflow* (Version 1.5.4). Research software. **Research Data Gouv**.  
-> DOI: **[Research Data Gouv DOI to be added]**
+> **Koa, I., Recking, A., & Borgniet, L. (2026).** *Pléiades ASP Workflow* (Version 1.5.4) [Software]. **Recherche Data Gouv**.  
+> DOI: **https://doi.org/10.57745/4OQDHQ**
 
 ## License
 
