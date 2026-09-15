@@ -1,10 +1,8 @@
 cff-version: 1.2.0
 
 message: >-
-  The associated Earth and Space Science article and permanent Research Data
-  Gouv DOI are not yet available. If you use this software before publication,
-  please cite this software release and update the citation to the archived DOI
-  once available.
+  If you use this software, please cite the archived research software using
+  the DOI provided below. 
 
 title: "Pléiades ASP Workflow"
 
@@ -13,6 +11,14 @@ type: software
 version: "1.5.4"
 
 date-released: "2026-09-08"
+
+doi: "10.57745/4OQDHQ"
+
+repository-code: "https://github.com/IslamKOA/pleiades-asp-workflow"
+
+url: "https://doi.org/10.57745/4OQDHQ"
+
+license: "CECILL-B"
 
 authors:
   - family-names: "Koa"
