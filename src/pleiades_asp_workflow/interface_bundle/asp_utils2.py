@@ -1197,29 +1197,62 @@ def get_rpc_window(rpc_path, lons, lats, height, buffer_px):
     return col_min, col_max, row_min, row_max
 
 
+
 def crop_one_rpc_image(img_path, rpc_path, out_img_path, out_rpc_path, rpc_window, overwrite):
     _remove_output(Path(out_img_path), overwrite)
     _remove_output(Path(out_rpc_path), overwrite)
+
     col_min, col_max, row_min, row_max = rpc_window
+
     with rasterio.open(img_path) as src:
         col0 = max(0, col_min)
         row0 = max(0, row_min)
         col1 = min(src.width, col_max)
         row1 = min(src.height, row_max)
+
         width = col1 - col0
         height_crop = row1 - row0
+
         if width <= 0 or height_crop <= 0:
-            raise ValueError(f"No overlap between AOI and image:\n{img_path}")
+            raise ValueError(
+                f"No overlap between AOI and image:\n{img_path}"
+            )
+
         window = Window(col0, row0, width, height_crop)
         data = src.read(window=window)
-        transform = src.window_transform(window)
+
         meta = src.meta.copy()
-        meta.update({"height": data.shape[1], "width": data.shape[2], "transform": transform})
-    Path(out_img_path).parent.mkdir(parents=True, exist_ok=True)
+        meta.update({
+            "height": height_crop,
+            "width": width,
+        })
+
+        # Preserve valid map georeferencing when present.
+        # Raw sensor images without a CRS must not receive
+        # an artificial geotransform.
+        if src.crs is not None:
+            meta["transform"] = src.window_transform(window)
+        else:
+            meta.pop("transform", None)
+            meta.pop("crs", None)
+
+    Path(out_img_path).parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
     with rasterio.open(out_img_path, "w", **meta) as dst:
         dst.write(data)
-    update_rpc_offsets(in_xml=rpc_path, out_xml=out_rpc_path, col0=col0, row0=row0)
+
+    update_rpc_offsets(
+        in_xml=rpc_path,
+        out_xml=out_rpc_path,
+        col0=col0,
+        row0=row0
+    )
+
     return col0, row0, width, height_crop
+
 
 
 def crop_prepared_images(settings: ProjectSettings, log: WorkflowLog):
