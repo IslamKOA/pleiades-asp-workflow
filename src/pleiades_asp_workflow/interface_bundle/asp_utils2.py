@@ -1021,17 +1021,30 @@ def _prepare_single_tile(source: Path, destination: Path, overwrite: bool, log: 
     raise ValueError(f"Unsupported image extension: {source.suffix}")
 
 
+# def _merge_tiles(tile_files: Sequence[Path], out_tif: Path, out_vrt: Path, overwrite: bool, log: WorkflowLog):
+#     _remove_output(out_tif, overwrite)
+#     if out_vrt.exists():
+#         out_vrt.unlink()
+#     gdalbuildvrt = _find_cmd("gdalbuildvrt")
+#     gdal_translate = _find_cmd("gdal_translate")
+#     if not gdalbuildvrt or not gdal_translate:
+#         raise RuntimeError("Multi-tile preparation requires gdalbuildvrt and gdal_translate.")
+#     subprocess.run([gdalbuildvrt, str(out_vrt), *[str(p) for p in tile_files]], check=True, env=_clean_gdal_env(), stdout=log._stream, stderr=subprocess.STDOUT)
+#     subprocess.run([gdal_translate, str(out_vrt), str(out_tif), "-co", "TILED=YES"], check=True, env=_clean_gdal_env(), stdout=log._stream, stderr=subprocess.STDOUT)
 def _merge_tiles(tile_files: Sequence[Path], out_tif: Path, out_vrt: Path, overwrite: bool, log: WorkflowLog):
     _remove_output(out_tif, overwrite)
     if out_vrt.exists():
         out_vrt.unlink()
-    gdalbuildvrt = _find_cmd("gdalbuildvrt")
-    gdal_translate = _find_cmd("gdal_translate")
-    if not gdalbuildvrt or not gdal_translate:
-        raise RuntimeError("Multi-tile preparation requires gdalbuildvrt and gdal_translate.")
-    subprocess.run([gdalbuildvrt, str(out_vrt), *[str(p) for p in tile_files]], check=True, env=_clean_gdal_env(), stdout=log._stream, stderr=subprocess.STDOUT)
-    subprocess.run([gdal_translate, str(out_vrt), str(out_tif), "-co", "TILED=YES"], check=True, env=_clean_gdal_env(), stdout=log._stream, stderr=subprocess.STDOUT)
-
+    _run_gdal(
+        "gdalbuildvrt",
+        [out_vrt, *tile_files],
+        log,
+    )
+    _run_gdal(
+        "gdal_translate",
+        [out_vrt, out_tif, "-co", "TILED=YES"],
+        log,
+    )
 
 def prepare_one_acquisition(name: str, inspected: Dict[str, object], settings: ProjectSettings, log: WorkflowLog):
     tile_files = list(inspected["tiles"])
