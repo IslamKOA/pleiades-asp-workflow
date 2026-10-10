@@ -962,7 +962,44 @@ def _remove_output(path: Path, overwrite: bool):
     else:
         path.unlink()
 
+def _run_gdal(command, arguments, log):
+    """Run GDAL natively on Linux or through WSL on Windows."""
+    if os.name == "nt":
+        import shlex
+        from pleiades_asp_runner.installer import windows_to_wsl_path
 
+        asp_bin = "$HOME/.pleiades-asp-runner/asp/3.3.0/bin"
+
+        converted = [
+            windows_to_wsl_path(arg) if isinstance(arg, Path) else str(arg)
+            for arg in arguments
+        ]
+
+        shell_command = (
+            'export PATH="$HOME/.pleiades-asp-runner/asp/3.3.0/bin:$PATH"; '
+            + shlex.join([command, *converted])
+        )
+
+        subprocess.run(
+            ["wsl.exe", "bash", "-lc", shell_command],
+            check=True,
+            stdout=log._stream,
+            stderr=subprocess.STDOUT,
+        )
+    else:
+        executable = _find_cmd(command)
+
+        if not executable:
+            raise RuntimeError(f"GDAL executable not found: {command}")
+
+        subprocess.run(
+            [executable, *[str(arg) for arg in arguments]],
+            check=True,
+            env=_clean_gdal_env(),
+            stdout=log._stream,
+            stderr=subprocess.STDOUT,
+        )
+        
 def _prepare_single_tile(source: Path, destination: Path, overwrite: bool, log: WorkflowLog):
     _remove_output(destination, overwrite)
     destination.parent.mkdir(parents=True, exist_ok=True)
