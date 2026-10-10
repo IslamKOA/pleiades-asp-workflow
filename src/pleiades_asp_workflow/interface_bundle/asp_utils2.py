@@ -3735,6 +3735,12 @@ def _run_asp_command(
         stream.flush()
 
         executable = shutil.which(command)
+
+        # On Windows, preliminary/final stereo must use native WSL staging,
+        # not the Python console-script wrapper.
+        if os.name == "nt" and command == "parallel_stereo":
+            executable = None
+
         env = None
 
         # When PATH points to the package console-script wrapper, bypass it and
