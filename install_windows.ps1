@@ -1,6 +1,8 @@
+
 # Pleiades ASP Workflow - Windows installer and updater
-# Run in PowerShell: powershell -ExecutionPolicy Bypass -File .\INSTALL_WINDOWS.ps1
-# Requires micromamba. Does not delete WSL distributions or project data.
+# Run: powershell -ExecutionPolicy Bypass -File .\install_windows.ps1
+# Requires an existing micromamba, mamba, or conda installation.
+# Never deletes existing WSL distributions, Conda environments, or user projects.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -9,29 +11,64 @@ $EnvironmentName = 'pleiades_asp'
 $AspVersion = if ($env:PLEIADES_ASP_VERSION) { $env:PLEIADES_ASP_VERSION.Trim() } else { '3.3.0' }
 $Workspace = Join-Path $HOME 'Pleiades_ASP_Workflow'
 
-function Assert-Success([string]$Description) {
-    if ($LASTEXITCODE -ne 0) { throw "$Description failed (exit code $LASTEXITCODE)." }
+function Assert-ExitCode([string]$Action) {
+    if ($LASTEXITCODE -ne 0) { throw "$Action failed (exit code $LASTEXITCODE)." }
 }
 
-function Get-MicromambaExecutable {
-    $cmd = Get-Command micromamba.exe -CommandType Application -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    foreach ($candidate in @(
-        (Join-Path $HOME 'micromamba\micromamba.exe'),
-        (Join-Path $HOME 'micromamba\Library\bin\micromamba.exe'),
-        (Join-Path $env:LOCALAPPDATA 'micromamba\micromamba.exe')
-    )) {
-        if (Test-Path -LiteralPath $candidate) { return $candidate }
+function Resolve-Executable([string[]]$Names, [string[]]$Candidates) {
+    foreach ($name in $Names) {
+        $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($command -and $command.Source -and (Test-Path -LiteralPath $command.Source -PathType Leaf)) {
+            return $command.Source
+        }
     }
-    throw 'micromamba is required. Install micromamba before running this installer.'
+    foreach ($candidate in $Candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            return $candidate
+        }
+    }
+    return $null
 }
 
-function Get-UsableWslDistro {
-    if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) { return $null }
+function Find-EnvironmentManager {
+    # Prefer micromamba if available; do not confuse PowerShell's 'Mamba' alias
+    # with the micromamba.exe executable.
+    $micromamba = Resolve-Executable @('micromamba.exe') @(
+        (Join-Path $env:LOCALAPPDATA 'micromamba\micromamba.exe'),
+        (Join-Path $HOME 'micromamba\micromamba.exe'),
+        (Join-Path $HOME 'micromamba\Library\bin\micromamba.exe')
+    )
+    if ($micromamba) { return @{ Name = 'micromamba'; Exe = $micromamba } }
+
+    $mamba = Resolve-Executable @('mamba.exe', 'mamba.bat') @()
+    if ($mamba) { return @{ Name = 'mamba'; Exe = $mamba } }
+
+    $condaCandidates = @()
+    foreach ($root in @($env:USERPROFILE, $env:LOCALAPPDATA, $env:PROGRAMDATA)) {
+        if ($root) {
+            foreach ($folder in @('miniforge3', 'miniconda3', 'anaconda3', 'Miniforge3', 'Miniconda3', 'Anaconda3')) {
+                $condaCandidates += Join-Path $root "$folder\Scripts\conda.exe"
+                $condaCandidates += Join-Path $root "$folder\condabin\conda.bat"
+            }
+        }
+    }
+    $conda = Resolve-Executable @('conda.exe', 'conda.bat') $condaCandidates
+    if ($conda) { return @{ Name = 'conda'; Exe = $conda } }
+    throw 'No supported environment manager found. Install micromamba, Miniforge, Miniconda, or Anaconda and rerun this installer.'
+}
+
+function Invoke-EnvironmentCommand([string[]]$Arguments, [string]$Action) {
+    & $Manager.Exe @Arguments
+    Assert-ExitCode $Action
+}
+
+function Find-UsableWslDistro {
+    if (-not (Get-Command wsl.exe -CommandType Application -ErrorAction SilentlyContinue)) { return $null }
     $raw = & wsl.exe --list --quiet 2>$null
     if ($LASTEXITCODE -ne 0) { return $null }
-    $names = @($raw | ForEach-Object { ($_ -replace "`0", '').Trim() } |
-        Where-Object { $_ -and $_ -notlike 'docker-desktop*' })
+    $names = @($raw | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object {
+        $_ -and $_ -notlike 'docker-desktop*'
+    })
     if ($env:PLEIADES_ASP_WSL_DISTRO -and $names -contains $env:PLEIADES_ASP_WSL_DISTRO) {
         return $env:PLEIADES_ASP_WSL_DISTRO
     }
@@ -42,27 +79,26 @@ function Get-UsableWslDistro {
 }
 
 Write-Host '=== Pleiades ASP Workflow: Install / Update ==='
-$Mamba = Get-MicromambaExecutable
-Write-Host "micromamba: $Mamba"
+$Manager = Find-EnvironmentManager
+Write-Host "Environment manager: $($Manager.Name)"
+Write-Host "Executable: $($Manager.Exe)"
 
-# 1. Create the dedicated environment if it does not exist.
-$environmentsJson = & $Mamba env list --json
-Assert-Success 'List micromamba environments'
-$envs = $environmentsJson | ConvertFrom-Json
-$environmentPath = Join-Path $HOME 'micromamba\envs\pleiades_asp'
-$environmentExists = @($envs.envs | Where-Object {
-    (Split-Path $_ -Leaf) -eq $EnvironmentName
+# 1. Create a separate environment, if needed.
+Write-Host '[1/6] Checking dedicated Python environment...'
+$environmentList = & $Manager.Exe env list --json
+Assert-ExitCode 'Query environments'
+$environmentInfo = ($environmentList | Out-String) | ConvertFrom-Json
+$environmentExists = @($environmentInfo.envs | Where-Object {
+    (Split-Path -Path $_ -Leaf) -eq $EnvironmentName
 }).Count -gt 0
 if (-not $environmentExists) {
-    Write-Host '[1/6] Creating Python environment...'
-    & $Mamba create -y -n $EnvironmentName -c conda-forge python=3.11 pip
-    Assert-Success 'Create Python environment'
+    Invoke-EnvironmentCommand @('create', '-y', '-n', $EnvironmentName, '-c', 'conda-forge', 'python=3.11', 'pip') 'Create Python environment'
 } else {
-    Write-Host '[1/6] Reusing existing Python environment.'
+    Write-Host "Reusing existing environment: $EnvironmentName"
 }
 
-# 2. Download exactly one GitHub revision; install the package and notebook from it.
-Write-Host '[2/6] Downloading latest GitHub revision (Git not required)...'
+# 2. Download the repository once, ensuring notebook and Python package match.
+Write-Host '[2/6] Downloading GitHub main branch (Git is not required)...'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('pleiades-install-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 try {
@@ -72,70 +108,59 @@ try {
     $repo = Get-ChildItem -LiteralPath $tempRoot -Directory |
         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pyproject.toml') } |
         Select-Object -First 1
-    if (-not $repo) { throw 'Downloaded repository lacks pyproject.toml.' }
+    if (-not $repo) { throw 'GitHub archive does not contain pyproject.toml.' }
     $repoRoot = $repo.FullName
 
-    Write-Host '[3/6] Installing package and Jupyter into pleiades_asp...'
-    & $Mamba run -n $EnvironmentName python -m pip install --upgrade --no-cache-dir $repoRoot jupyterlab ipywidgets
-    Assert-Success 'Install workflow and Jupyter'
+    # 3. Install/update from this same downloaded revision.
+    Write-Host '[3/6] Installing workflow and Jupyter...'
+    Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'python', '-m', 'pip', 'install', '--upgrade', '--force-reinstall', '--no-cache-dir', $repoRoot) 'Install Python package'
 
-    # 3. Ensure a working WSL distribution. Never unregister an existing distro.
+    # 4. Install/initialize a Linux distro if none is available.
     Write-Host '[4/6] Checking WSL...'
-    $distro = Get-UsableWslDistro
+    $distro = Find-UsableWslDistro
     if (-not $distro) {
-        if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
-            throw 'WSL is unavailable. Enable Windows Subsystem for Linux and rerun this installer.'
+        if (-not (Get-Command wsl.exe -CommandType Application -ErrorAction SilentlyContinue)) {
+            throw 'WSL is not available. Enable WSL and rerun the installer.'
         }
-        Write-Host 'Ubuntu is not installed. Windows may request elevation and/or a restart.'
+        Write-Host 'No WSL Linux distribution found. Requesting Ubuntu installation...'
         & wsl.exe --install -d Ubuntu
-        Assert-Success 'Install Ubuntu WSL'
-        $distro = Get-UsableWslDistro
+        Assert-ExitCode 'Install Ubuntu'
+        $distro = Find-UsableWslDistro
         if (-not $distro) {
-            throw 'Complete Ubuntu initial setup (and restart Windows if requested), then rerun this script.'
+            throw 'Complete the Windows restart and Ubuntu first-run username/password setup, then rerun this installer.'
         }
     }
     $env:PLEIADES_ASP_WSL_DISTRO = $distro
     [Environment]::SetEnvironmentVariable('PLEIADES_ASP_WSL_DISTRO', $distro, 'User')
     & wsl.exe -d $distro -- sh -lc 'printf "WSL home: %s\n" "$HOME"'
-    Assert-Success 'Initialize WSL distribution'
+    Assert-ExitCode 'Initialize WSL'
 
-    # 4. Install managed ASP in WSL. Preserve scientific data and other environments.
+    # 5. Install or verify the managed Linux ASP distribution.
     Write-Host "[5/6] Installing/verifying ASP $AspVersion in $distro..."
-    & $Mamba run -n $EnvironmentName asp-install $AspVersion
-    Assert-Success 'ASP installation'
+    Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'asp-install', $AspVersion) 'Install ASP'
 
-    # 5. Refresh the installed workspace, then overwrite ONLY the shipped notebook
-    # using the very same downloaded GitHub revision as the Python package.
-    Write-Host '[6/6] Updating notebook and workspace...'
-    & $Mamba run -n $EnvironmentName pleiades-workflow-init
-    Assert-Success 'Initialize workflow workspace'
-    New-Item -ItemType Directory -Force -Path $Workspace | Out-Null
+    # 6. Refresh only package-managed workspace resources.
+    Write-Host '[6/6] Refreshing notebook and workspace...'
+    Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'pleiades-workflow-init') 'Initialize workspace'
 
-    $notebook = Join-Path $repoRoot 'Pleiades_ASP_Workflow.ipynb'
-    if (-not (Test-Path -LiteralPath $notebook)) {
-        $notebook = Get-ChildItem -LiteralPath $repoRoot -Recurse -Filter 'Pleiades_ASP_Workflow.ipynb' -File |
-            Select-Object -First 1 -ExpandProperty FullName
-    }
-    if (-not $notebook -or -not (Test-Path -LiteralPath $notebook)) {
-        throw 'Cannot locate Pleiades_ASP_Workflow.ipynb in the GitHub download.'
+    $notebook = Join-Path $Workspace 'Pleiades_ASP_Workflow.ipynb'
+    if (-not (Test-Path -LiteralPath $notebook -PathType Leaf)) {
+        throw "Notebook was not created: $notebook"
     }
     $notebookContent = Get-Content -LiteralPath $notebook -Raw -Encoding UTF8
     if ($notebookContent -notmatch 'from pleiades_asp_workflow\.interface_bundle import asp_utils2') {
-        throw 'GitHub notebook still uses an unsupported local import; fix notebook startup before deploying.'
+        throw 'The installed notebook does not contain the corrected packaged import. Check the committed GitHub notebook and package data.'
     }
-    Copy-Item -LiteralPath $notebook -Destination (Join-Path $Workspace 'Pleiades_ASP_Workflow.ipynb') -Force
-
-    # Verify package import comes from the installation and staging exists.
-    & $Mamba run -n $EnvironmentName python -c "from pleiades_asp_workflow.interface_bundle import asp_utils2; from pleiades_asp_runner.staging import stage_stereo_command; print('Verified:', asp_utils2.__file__)"
-    Assert-Success 'Verify packaged interface and staging'
+    Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'python', '-c', "from pleiades_asp_workflow.interface_bundle import asp_utils2; from pleiades_asp_runner.staging import stage_stereo_command; print('Interface:', asp_utils2.__file__)") 'Verify interface and staging imports'
 
     Write-Host ''
     Write-Host 'Installation/update completed.' -ForegroundColor Green
+    Write-Host "Environment manager: $($Manager.Name)"
     Write-Host "Environment: $EnvironmentName"
     Write-Host "WSL distribution: $distro"
-    Write-Host "Notebook: $(Join-Path $Workspace 'Pleiades_ASP_Workflow.ipynb')"
-    Write-Host 'Launch with:'
-    Write-Host ('  micromamba run -n {0} jupyter lab "{1}"' -f $EnvironmentName, (Join-Path $Workspace 'Pleiades_ASP_Workflow.ipynb'))
+    Write-Host "Notebook: $notebook"
+    Write-Host 'Launch the workflow using:'
+    Write-Host ('  & "{0}" run -n {1} jupyter lab "{2}"' -f $Manager.Exe, $EnvironmentName, $notebook)
 } finally {
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force
