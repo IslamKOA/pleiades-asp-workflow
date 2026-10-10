@@ -20,7 +20,6 @@ DEFAULT_DIRECTORY = Path.home() / "Pleiades_ASP_Workflow"
 
 MANAGED_ITEMS = (
     "Pleiades_ASP_Workflow.ipynb",
-    "asp_utils2.py",
     "prepare_stereo_metadata_and_geometry.py",
     "pleiades_reference_dem.py",
     "global_dem_downloader.py",
