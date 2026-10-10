@@ -48,7 +48,7 @@ conda activate pleiades_asp
 
 #### Windows
 
-The Windows installer automatically creates the `pleiades_asp` environment with Python 3.11. Manual environment creation is not required.
+The Windows installer automatically creates the `pleiades_asp` environment with Python 3.11 and installs the required dependencies. **Manual Python environment creation or activation is not required.**
 
 An existing installation of **Micromamba, Mamba, Miniforge, Miniconda, or Anaconda** is required. The installer automatically detects the available environment manager.
 
@@ -80,35 +80,49 @@ pleiades-workflow-init
 
 #### Windows
 
-On Windows 10/11, an automated PowerShell installer prepares the Python environment, installs **Pléiades ASP Workflow** and its dependencies, configures the Windows Subsystem for Linux (WSL), installs NASA Ames Stereo Pipeline, and initializes the JupyterLab workspace.
+On Windows 10/11, an automated PowerShell installer prepares the Python environment, installs **Pléiades ASP Workflow** and its dependencies, configures Windows Subsystem for Linux (WSL), installs NASA Ames Stereo Pipeline, and initializes the JupyterLab workspace.
 
-Open **Windows PowerShell** and run:
+##### Install from GitHub
+
+Open **Windows PowerShell** and download the installer:
 
 ```powershell
-irm "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" | iex
+Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" `
+  -OutFile "$HOME\Downloads\install_windows.ps1"
+```
+
+Run the downloaded installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows.ps1"
 ```
 
 The installer automatically:
 
 1. Detects Micromamba, Mamba, or Conda and creates the `pleiades_asp` environment with Python 3.11 if it does not exist.
-2. Downloads and installs the latest Pléiades ASP Workflow release from GitHub, including its Python dependencies and JupyterLab.
-3. Detects an existing WSL Linux distribution or installs Ubuntu if necessary.
+2. Downloads and installs the latest workflow from GitHub, including the required Python libraries and JupyterLab.
+3. Detects an existing WSL Linux distribution or installs Ubuntu when necessary.
 4. Downloads, installs, and verifies the official NASA Ames Stereo Pipeline distribution within WSL.
 5. Creates or updates the notebook workspace while preserving existing user project data.
 
-**First-time Ubuntu setup:** Windows may request administrator approval, a system restart, or the creation of a Linux username and password. Follow the on-screen instructions. If a restart interrupts installation, rerun the same PowerShell command.
+**First-time Ubuntu setup:** Windows may request administrator approval, a restart, or the creation of a Linux username and password. Complete these prompts when requested. If installation is interrupted by a restart, rerun the same installer.
 
-By default, the reference ASP version **3.3.0** is installed.
+By default, **ASP 3.3.0** is installed, matching the reference version used in the associated study.
 
 ##### Update an existing installation
 
-To update the workflow, rerun the same installation command:
+To update the workflow, download the latest installer and run it again:
 
 ```powershell
-irm "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" | iex
+Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" `
+  -OutFile "$HOME\Downloads\install_windows.ps1"
+
+powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows.ps1"
 ```
 
-The installer refreshes the Python package and notebook files together, while preserving user project data.
+The installer refreshes the Python package and package-managed notebook files together while preserving user project data. Close any running JupyterLab sessions before updating.
 
 ##### Optional: Select another ASP version
 
@@ -116,13 +130,62 @@ To request another ASP version, define it before running the installer. For exam
 
 ```powershell
 $env:PLEIADES_ASP_VERSION = "3.4.0"
-irm "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" | iex
+powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows.ps1"
 ```
 
-For reproducibility of the workflow described in the associated study, **ASP 3.3.0 is recommended**. Compatibility with other ASP versions should be verified.
+For reproducibility of the workflow described in the associated study, **ASP 3.3.0 is recommended**. Compatibility with other versions should be verified.
 
-> **Windows execution:** The interactive JupyterLab interface runs in the Windows Python environment, while ASP commands execute through the managed WSL Linux distribution. ASP installation and execution are handled by the workflow runner; users do not need to configure ASP paths manually.
+> **Windows execution:** The interactive JupyterLab interface runs in the Windows Python environment, while NASA Ames Stereo Pipeline commands execute through the managed WSL Linux distribution. Users do not need to configure Linux ASP paths manually.
 
+---
+
+### 3. Launch the workflow
+
+The initialized notebook workspace is created automatically in the user's home directory:
+
+```text
+Pleiades_ASP_Workflow/
+```
+
+#### Linux
+
+With the `pleiades_asp` environment activated, launch JupyterLab:
+
+```bash
+jupyter lab "$HOME/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb"
+```
+
+#### Windows
+
+After installation, open **Windows PowerShell**. There is no need to manually activate the Python environment.
+
+Use the command corresponding to your installed environment manager.
+
+**Micromamba:**
+
+```powershell
+micromamba run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_Workflow.ipynb"
+```
+
+**Conda (Miniforge, Miniconda, or Anaconda):**
+
+```powershell
+conda run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_Workflow.ipynb"
+```
+
+**Mamba:**
+
+```powershell
+mamba run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_Workflow.ipynb"
+```
+
+Once JupyterLab opens, click:
+
+```text
+▶ Start Pléiades ASP Workflow
+```
+
+The interactive workflow interface will initialize, providing access to data preparation, metadata and geometry analysis, ASP processing, DSM generation, and optional co-registration.
 ---
 
 ### 3. Launch the workflow
