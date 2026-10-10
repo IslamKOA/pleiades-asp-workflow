@@ -186,6 +186,7 @@ Once JupyterLab opens, click:
 ```
 
 The interactive workflow interface will initialize, providing access to data preparation, metadata and geometry analysis, ASP processing, DSM generation, and optional co-registration.
+
 ---
 
 ### 3. Launch the workflow
