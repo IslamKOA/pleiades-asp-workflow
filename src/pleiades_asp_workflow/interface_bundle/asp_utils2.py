@@ -1092,12 +1092,75 @@ def prepare_one_acquisition(name: str, inspected: Dict[str, object], settings: P
 # OPTIONAL AOI CROP
 # ============================================================
 
+def _rpc_polynomial(coefficients, latitude, longitude, altitude):
+    """Evaluate the standard 20-term RPC00B polynomial (normalized inputs)."""
+    p = np.asarray(coefficients, dtype=float)
+    if p.shape != (20,):
+        raise ValueError("RPC polynomial must contain exactly 20 coefficients.")
+    x, y, z = latitude, longitude, altitude
+    return (
+        p[0] + p[1]*y + p[2]*x + p[3]*z
+        + p[4]*y*x + p[5]*y*z + p[6]*x*z
+        + p[7]*y*y + p[8]*x*x + p[9]*z*z
+        + p[10]*x*y*z + p[11]*y*y*y + p[12]*y*x*x
+        + p[13]*y*z*z + p[14]*y*y*x + p[15]*x*x*x
+        + p[16]*x*z*z + p[17]*y*y*z + p[18]*x*x*z
+        + p[19]*z*z*z
+    )
+
+
+class _WindowsRPCModel:
+    """Lightweight rpcm-compatible forward RPC projection for Windows AOI crops.
+
+    Implements only RPCModel(..., dict_format='geotiff').projection(...),
+    which is the operation used by this workflow. Pixel-coordinate offsets
+    match rpcm: no additional half-pixel adjustment is applied.
+    """
+
+    def __init__(self, data, dict_format="geotiff"):
+        if dict_format != "geotiff":
+            raise ValueError("Only GeoTIFF-style RPC dictionaries are supported.")
+        self.data = data
+        for key in ("LINE_SCALE", "SAMP_SCALE", "LAT_SCALE", "LONG_SCALE", "HEIGHT_SCALE"):
+            if float(data[key]) == 0:
+                raise ValueError(f"Invalid zero RPC scale: {key}")
+        for key in ("LINE_DEN_COEFF", "SAMP_DEN_COEFF", "LINE_NUM_COEFF", "SAMP_NUM_COEFF"):
+            coeffs = np.fromstring(str(data[key]), sep=" ")
+            if len(coeffs) != 20:
+                raise ValueError(f"Expected 20 coefficients in {key}, got {len(coeffs)}")
+            setattr(self, key.lower(), coeffs)
+
+    def projection(self, lon, lat, alt):
+        d = self.data
+        lon = np.asarray(lon, dtype=float)
+        lat = np.asarray(lat, dtype=float)
+        alt = np.asarray(alt, dtype=float)
+        x = (lat - float(d["LAT_OFF"])) / float(d["LAT_SCALE"])
+        y = (lon - float(d["LONG_OFF"])) / float(d["LONG_SCALE"])
+        z = (alt - float(d["HEIGHT_OFF"])) / float(d["HEIGHT_SCALE"])
+        col = _rpc_polynomial(self.samp_num_coeff, x, y, z) / _rpc_polynomial(self.samp_den_coeff, x, y, z)
+        row = _rpc_polynomial(self.line_num_coeff, x, y, z) / _rpc_polynomial(self.line_den_coeff, x, y, z)
+        col = col * float(d["SAMP_SCALE"]) + float(d["SAMP_OFF"])
+        row = row * float(d["LINE_SCALE"]) + float(d["LINE_OFF"])
+        if not np.all(np.isfinite(col)) or not np.all(np.isfinite(row)):
+            raise ValueError("RPC projection produced non-finite image coordinates.")
+        return col, row
+
+
 def _require_rpcm():
+    # On Windows the rpcm package may fail at import time because its package
+    # initialization imports the optional srtm4 binary dependency. AOI cropping
+    # only needs forward RPC projection; provide that operation without srtm4.
+    if os.name == "nt":
+        return _WindowsRPCModel
     try:
         from rpcm.rpc_model import RPCModel
         return RPCModel
     except ImportError as exc:
-        raise ImportError("AOI cropping requires rpcm RPCModel, which is a standard workflow dependency and should be installed automatically. Reinstall or update pleiades-asp-workflow in the active Python environment.") from exc
+        raise ImportError(
+            "AOI cropping requires rpcm RPCModel on Linux. "
+            "Reinstall or update pleiades-asp-workflow in the active Python environment."
+        ) from exc
 
 
 def load_rpc_from_xml(xml_path):
