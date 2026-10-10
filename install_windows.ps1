@@ -1,5 +1,4 @@
-
-# Pleiades ASP Workflow - Windows installer and updater
+# Pléiades ASP Workflow - Windows installer and updater
 # Run: powershell -ExecutionPolicy Bypass -File .\install_windows.ps1
 # Requires an existing micromamba, mamba, or conda installation.
 # Never deletes existing WSL distributions, Conda environments, or user projects.
@@ -122,12 +121,20 @@ try {
         if (-not (Get-Command wsl.exe -CommandType Application -ErrorAction SilentlyContinue)) {
             throw 'WSL is not available. Enable WSL and rerun the installer.'
         }
-        Write-Host 'No WSL Linux distribution found. Requesting Ubuntu installation...'
+        Write-Host ''
+        Write-Host 'Ubuntu will now be installed. Windows may ask for administrator approval or a restart.' -ForegroundColor Yellow
+        Write-Host 'On first use, Ubuntu may ask you to choose a Linux username and password.' -ForegroundColor Yellow
+        Write-Host 'Once you see a Linux prompt (for example user@computer:$), type exit.' -ForegroundColor Yellow
+        Write-Host 'The Windows installer will then continue automatically to ASP installation.' -ForegroundColor Yellow
+        Write-Host ''
         & wsl.exe --install -d Ubuntu
-        Assert-ExitCode 'Install Ubuntu'
+        $wslInstallExit = $LASTEXITCODE
         $distro = Find-UsableWslDistro
         if (-not $distro) {
-            throw 'Complete the Windows restart and Ubuntu first-run username/password setup, then rerun this installer.'
+            throw 'Ubuntu setup has not completed. If a Windows restart is required, restart and run this installer again.'
+        }
+        if ($wslInstallExit -ne 0) {
+            Write-Warning "Ubuntu installer returned $wslInstallExit, but '$distro' is now registered; checking usability."
         }
     }
     $env:PLEIADES_ASP_WSL_DISTRO = $distro
