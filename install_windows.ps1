@@ -14,7 +14,7 @@ function Assert-Success([string]$Description) {
 }
 
 function Get-MicromambaExecutable {
-    $cmd = Get-Command micromamba -ErrorAction SilentlyContinue
+    $cmd = Get-Command micromamba.exe -CommandType Application -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     foreach ($candidate in @(
         (Join-Path $HOME 'micromamba\micromamba.exe'),
