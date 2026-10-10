@@ -1006,11 +1006,32 @@ def _prepare_single_tile(source: Path, destination: Path, overwrite: bool, log: 
     if source.suffix.lower() in {".tif", ".tiff"}:
         shutil.copy2(source, destination)
         return
+        
+    # if source.suffix.lower() == ".jp2":
+    #     gdal_translate = _find_cmd("gdal_translate")
+    #     if gdal_translate:
+    #         subprocess.run([gdal_translate, str(source), str(destination), "-co", "TILED=YES"], check=True, env=_clean_gdal_env(), stdout=log._stream, stderr=subprocess.STDOUT)
+    #         return
     if source.suffix.lower() == ".jp2":
+        if os.name == "nt":
+            _run_gdal(
+                "gdal_translate",
+                [source, destination, "-co", "TILED=YES"],
+                log,
+            )
+            return
+
         gdal_translate = _find_cmd("gdal_translate")
         if gdal_translate:
-            subprocess.run([gdal_translate, str(source), str(destination), "-co", "TILED=YES"], check=True, env=_clean_gdal_env(), stdout=log._stream, stderr=subprocess.STDOUT)
+            subprocess.run(
+                [gdal_translate, str(source), str(destination), "-co", "TILED=YES"],
+                check=True,
+                env=_clean_gdal_env(),
+                stdout=log._stream,
+                stderr=subprocess.STDOUT,
+            )
             return
+        
         with rasterio.open(source) as src:
             profile = src.profile.copy()
             profile.update(driver="GTiff", tiled=True)
