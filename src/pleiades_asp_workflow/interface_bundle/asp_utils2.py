@@ -3818,7 +3818,17 @@ def _run_asp_command(
                     *[str(value) for value in arguments],
                 ]
                 process_cwd = cwd
+#########
+        windows_stereo_stage = None
 
+        if os.name == "nt" and command == "parallel_stereo":
+            from pleiades_asp_runner.staging import stage_stereo_command
+
+            windows_stereo_stage = stage_stereo_command(arguments, cwd)
+            cmd = windows_stereo_stage.command
+            process_cwd = None
+############
+              
         stream.write("Resolved command:\n  " + " ".join(str(v) for v in cmd) + "\n")
         stream.flush()
 
@@ -3852,12 +3862,23 @@ def _run_asp_command(
                 f"{command} stopped with exit code {returncode}.\n"
                 f"Detailed log: {log_file}"
             )
+
             if tail:
                 message += "\n\nLast ASP log lines:\n" + tail
             raise RuntimeError(message)
 
+        if windows_stereo_stage is not None:
+            windows_stereo_stage.copy_results()
+
         if controller is not None:
             controller.check_cancelled()
+            
+        #     if tail:
+        #         message += "\n\nLast ASP log lines:\n" + tail
+        #     raise RuntimeError(message)
+
+        # if controller is not None:
+        #     controller.check_cancelled()
 
 
 def _extract_cam_test_triplet(pattern: str, text: str):
