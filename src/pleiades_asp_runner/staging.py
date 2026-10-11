@@ -97,6 +97,7 @@ class StereoStage:
         )
 
 
+
 def stage_stereo_command(
     arguments: list[object],
     project_dir: str | Path,
@@ -109,7 +110,19 @@ def stage_stereo_command(
     if not arguments:
         raise ValueError("parallel_stereo needs an output prefix")
 
-    output_prefix = Path(arguments[-1]).expanduser().resolve()
+    # For map-projected stereo, ASP receives a reference DEM
+    # after the output prefix. The DEM must stay as an input.
+    has_reference_dem = (
+        len(arguments) >= 2
+        and "--alignment-method" in [str(v) for v in arguments]
+        and str(arguments[-1]).lower().endswith((".tif", ".tiff", ".vrt"))
+    )
+
+    prefix_index = -2 if has_reference_dem else -1
+
+    output_prefix = Path(
+        arguments[prefix_index]
+    ).expanduser().resolve()
 
     if not output_prefix.is_absolute() or not output_prefix.name:
         raise ValueError(
@@ -131,10 +144,11 @@ def stage_stereo_command(
 
     runtime_args = [
         _runtime_argument(value)
-        for value in arguments[:-1]
+        for value in arguments
     ]
 
-    runtime_args.append(
+    # Replace only the output prefix, not the reference DEM.
+    runtime_args[prefix_index] = (
         f"{native_dir}/{output_prefix.name}"
     )
 
