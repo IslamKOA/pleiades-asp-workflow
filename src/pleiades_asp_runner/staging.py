@@ -75,19 +75,21 @@ class StereoStage:
     destination: Path
 
     def copy_results(self) -> None:
-        """Copy completed stereo artifacts into the original project folder."""
+        """Copy completed WSL stereo artifacts into the Windows project folder."""
         self.destination.mkdir(parents=True, exist_ok=True)
 
         destination_wsl = windows_to_wsl_path(
             self.destination.resolve()
         )
 
+        # Windows filesystems may not permit Linux symbolic links.
+        # Dereference them and copy their actual contents instead.
         subprocess.run(
             [
                 *_wsl_base(),
                 "--",
                 "cp",
-                "-a",
+                "-rL",
                 f"{self.native_directory}/.",
                 destination_wsl,
             ],
