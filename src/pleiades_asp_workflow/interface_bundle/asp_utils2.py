@@ -3952,6 +3952,35 @@ def _run_asp_command(
                 f"Partial outputs, if any, were left on disk. Detailed log: {log_file}"
             )
 
+
+        except Exception:
+            # Record Windows subprocess errors without changing Linux behavior.
+            if os.name == "nt":
+                diagnostic_path = log_file.with_name(
+                    log_file.stem + ".python_error.log"
+                )
+
+                diagnostic = (
+                    f"Time: {datetime.now().astimezone().isoformat()}\n"
+                    f"Command: {command}\n"
+                    f"Python: {sys.executable}\n"
+                    f"Working directory: {process_cwd}\n"
+                    f"WSL staging directory: "
+                    f"{getattr(windows_stereo_stage, 'native_directory', 'not applicable')}\n"
+                    f"Traceback:\n{traceback.format_exc()}\n"
+                )
+
+                diagnostic_path.write_text(
+                    diagnostic, encoding="utf-8"
+                )
+                stream.write(
+                    f"\n[workflow] Python exception; full traceback: {diagnostic_path}\n"
+                )
+                stream.write(diagnostic)
+                stream.flush()
+
+            raise
+
         if returncode != 0:
             try:
                 lines = log_file.read_text(
@@ -3969,8 +3998,39 @@ def _run_asp_command(
                 message += "\n\nLast ASP log lines:\n" + tail
             raise RuntimeError(message)
 
+
         if windows_stereo_stage is not None:
-            windows_stereo_stage.copy_results()
+            try:
+                stream.write(
+                    "\n[workflow] ASP exited with code 0; copying WSL results to Windows.\n"
+                )
+                stream.flush()
+
+                windows_stereo_stage.copy_results()
+
+                stream.write(
+                    "[workflow] WSL-to-Windows copy completed.\n"
+                )
+                stream.flush()
+
+            except Exception:
+                diagnostic_path = log_file.with_name(
+                    log_file.stem + ".python_error.log"
+                )
+
+                diagnostic_path.write_text(
+                    "WSL-to-Windows output synchronization failed.\n"
+                    f"Native directory: {windows_stereo_stage.native_directory}\n"
+                    f"Windows destination: {windows_stereo_stage.destination}\n"
+                    f"Traceback:\n{traceback.format_exc()}\n",
+                    encoding="utf-8",
+                )
+
+                stream.write(
+                    f"\n[workflow] Copy failed; traceback: {diagnostic_path}\n"
+                )
+                stream.flush()
+                raise
 
         if controller is not None:
             controller.check_cancelled()
