@@ -48,9 +48,7 @@ conda activate pleiades_asp
 
 #### Windows
 
-The Windows installer automatically creates the `pleiades_asp` environment with Python 3.11 and installs the required dependencies. **Manual Python environment creation or activation is not required.**
-
-An existing installation of **Micromamba, Mamba, Miniforge, Miniconda, or Anaconda** is required. The installer automatically detects the available environment manager.
+**No manual Python environment setup is required.** If Micromamba, Mamba, Miniforge, Miniconda, or Anaconda is already installed, the standard installer automatically detects and reuses it. **If none is installed, the first-time Windows installer automatically downloads lightweight Micromamba**, then creates the dedicated `pleiades_asp` Python 3.11 environment. Both options are explained in [Install on Windows](#windows-1).
 
 ---
 
@@ -82,9 +80,9 @@ pleiades-workflow-init
 
 On Windows 10/11, an automated PowerShell installer prepares the Python environment, installs **Pléiades ASP Workflow** and its dependencies, configures Windows Subsystem for Linux (WSL), installs NASA Ames Stereo Pipeline, and initializes the JupyterLab workspace.
 
-##### Install from GitHub
+##### Option A — Existing Micromamba, Mamba, or Conda
 
-Open **Windows PowerShell** and download the installer:
+Choose this option if you already have an environment manager. Open **Windows PowerShell**:
 
 ```powershell
 Invoke-WebRequest `
@@ -104,6 +102,22 @@ The installer automatically:
 **First-time Ubuntu setup:** Windows may request administrator approval, a restart, or the creation of a Linux username and password. Complete these prompts when requested. If installation is interrupted by a restart, rerun the same installer.
 
 By default, **ASP 3.3.0** is installed, matching the reference version used in the associated study.
+
+##### Option B — New computer without Conda or Micromamba
+
+If you do not already have Micromamba, Mamba, Miniforge, Miniconda, or Anaconda, use the **optional first-time setup script**. It installs the lightweight standalone **Micromamba** for the current Windows user, then launches the standard installer above. Existing environments are not deleted.
+
+Open Windows PowerShell:
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows_first_time.ps1" `
+  -OutFile "$HOME\\Downloads\\install_windows_first_time.ps1"
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$HOME\\Downloads\\install_windows_first_time.ps1"
+```
+
+The first-time installer requires an internet connection and may request Windows permissions to install WSL/Ubuntu. Miniforge or a full Anaconda distribution is **not** required. The conventional `install_windows.ps1` remains the recommended option when an environment manager is already installed.
 
 ##### Update an existing installation
 
@@ -183,48 +197,6 @@ Once JupyterLab opens, click:
 The interactive workflow interface will initialize, providing access to data preparation, metadata and geometry analysis, ASP processing, DSM generation, and optional co-registration.
 
 ---
-
-### 3. Launch the workflow
-
-The initialized notebook workspace is created automatically in the user's home directory:
-
-```text
-$HOME/Pleiades_ASP_Workflow/
-```
-
-#### Linux
-
-With the `pleiades_asp` environment activated, launch JupyterLab:
-
-```bash
-jupyter lab "$HOME/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb"
-```
-
-#### Windows
-
-Open Windows PowerShell and launch JupyterLab using your installed environment manager.
-
-**Micromamba:**
-
-```powershell
-micromamba run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_Workflow.ipynb"
-```
-
-**Conda:**
-
-```powershell
-conda run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_Workflow.ipynb"
-```
-
-For Mamba, replace `conda` with `mamba` if its command is available.
-
-Once the notebook opens in JupyterLab, click:
-
-```text
-▶ Start Pléiades ASP Workflow
-```
-
-The interactive workflow interface will initialize, providing access to data preparation, metadata and geometry analysis, ASP processing, DSM generation, and optional co-registration.
 
 ### ASP documentation
 

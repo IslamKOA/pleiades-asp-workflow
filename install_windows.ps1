@@ -98,7 +98,17 @@ if (-not $environmentExists) {
 
 # 2. Download the repository once, ensuring notebook and Python package match.
 Write-Host '[2/6] Downloading GitHub main branch (Git is not required)...'
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('pleiades-install-' + [Guid]::NewGuid().ToString('N'))
+# Prefer a short build path: Windows wheel builds can exceed legacy MAX_PATH
+# when temporary directories and package-data notebook paths are nested.
+# Fall back to a user-writable directory if the drive root is restricted.
+$shortBuildBase = Join-Path $env:SystemDrive 'asp-build'
+try {
+    New-Item -ItemType Directory -Path $shortBuildBase -Force -ErrorAction Stop | Out-Null
+} catch {
+    $shortBuildBase = Join-Path $HOME 'asp-build'
+    New-Item -ItemType Directory -Path $shortBuildBase -Force | Out-Null
+}
+$tempRoot = Join-Path $shortBuildBase ('p-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 try {
     $zipPath = Join-Path $tempRoot 'repository.zip'
@@ -109,6 +119,17 @@ try {
         Select-Object -First 1
     if (-not $repo) { throw 'GitHub archive does not contain pyproject.toml.' }
     $repoRoot = $repo.FullName
+
+    # Shorten extracted archive folder name before pip/setuptools build.
+    $shortRepoRoot = Join-Path $tempRoot 'src'
+    Move-Item -LiteralPath $repoRoot -Destination $shortRepoRoot
+    $repoRoot = $shortRepoRoot
+
+    # pip may create additional temporary build directories; keep those short too.
+    $oldTemp = $env:TEMP
+    $oldTmp = $env:TMP
+    $env:TEMP = $tempRoot
+    $env:TMP = $tempRoot
 
     # 3. Install/update from this same downloaded revision.
     Write-Host '[3/6] Installing workflow and Jupyter...'
@@ -169,6 +190,8 @@ try {
     Write-Host 'Launch the workflow using:'
     Write-Host ('  & "{0}" run -n {1} jupyter lab "{2}"' -f $Manager.Exe, $EnvironmentName, $notebook)
 } finally {
+    $env:TEMP = $oldTemp
+    $env:TMP = $oldTmp
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force
     }
