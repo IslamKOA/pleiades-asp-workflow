@@ -93,12 +93,6 @@ Invoke-WebRequest `
 powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows.ps1"
 ```
 
-Run the downloaded installer:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows.ps1"
-```
-
 The installer automatically:
 
 1. Detects Micromamba, Mamba, or Conda and creates the `pleiades_asp` environment with Python 3.11 if it does not exist.
