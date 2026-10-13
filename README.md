@@ -46,9 +46,11 @@ conda create -n pleiades_asp python=3.11 pip -y
 conda activate pleiades_asp
 ```
 
+**Next step:** [Continue to Linux installation →](#linux-1)
+
 #### Windows
 
-**No manual Python environment setup is required.** If Micromamba, Mamba, Miniforge, Miniconda, or Anaconda is already installed, the standard installer automatically detects and reuses it. **If none is installed, the first-time Windows installer automatically downloads lightweight Micromamba**, then creates the dedicated `pleiades_asp` Python 3.11 environment. Both options are explained in [Install on Windows](#windows-1).
+**No manual Python environment setup is required.** If Micromamba, Mamba, Miniforge, Miniconda, or Anaconda is already installed, the standard installer automatically detects and reuses it. **If none is installed, the first-time Windows installer automatically downloads lightweight Micromamba**, then creates the dedicated `pleiades_asp` Python 3.11 environment. **Next step:** [Continue to Windows installation options →](#windows-1).
 
 ---
 
