@@ -1,60 +1,68 @@
-# Pléiades ASP Workflow - Windows first-time setup (no Conda/Micromamba required)
-# Run in Windows PowerShell:
-# powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_windows_first_time.ps1
-# Installs Miniforge for the current user only, then uses install_windows.ps1.
-# Does not remove or change existing Python/Conda environments.
+# Pléiades ASP Workflow - first-time Windows setup (no Conda required)
+# Downloads standalone Micromamba for the current user, then runs the standard installer.
+# Does not change or remove any existing Python / Conda environments.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 if (-not [Environment]::Is64BitOperatingSystem) {
-    throw 'A 64-bit Windows installation is required.'
+    throw '64-bit Windows is required.'
 }
+$micromambaExe = Join-Path $env:LOCALAPPDATA 'micromamba\micromamba.exe'
+$micromambaRoot = Join-Path $HOME 'micromamba'
+$scriptUrl = 'https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1'
 
-$workflowScript = Join-Path $env:TEMP 'pleiades_asp_install_windows.ps1'
-$workflowUrl = 'https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1'
-$miniforgePath = Join-Path $HOME 'miniforge3'
-$miniforgeConda = Join-Path $miniforgePath 'Scripts\conda.exe'
-
-# Existing environment managers are supported by the standard installer.
-$existingManager = @('micromamba.exe', 'mamba.exe', 'conda.exe', 'conda.bat') |
+# Reuse existing managers: the standard installer chooses Micromamba, Mamba, or Conda.
+$existingManager = @('micromamba.exe','mamba.exe','mamba.bat','conda.exe','conda.bat') |
     ForEach-Object { Get-Command $_ -CommandType Application -ErrorAction SilentlyContinue } |
     Where-Object { $_ } | Select-Object -First 1
-$knownConda = @(
-    $miniforgeConda,
+$knownManager = @(
+    $micromambaExe,
+    (Join-Path $HOME 'micromamba\micromamba.exe'),
+    (Join-Path $HOME 'miniforge3\Scripts\conda.exe'),
     (Join-Path $HOME 'miniconda3\Scripts\conda.exe'),
     (Join-Path $HOME 'anaconda3\Scripts\conda.exe'),
-    (Join-Path $env:LOCALAPPDATA 'micromamba\micromamba.exe')
+    (Join-Path $env:LOCALAPPDATA 'Programs\Miniforge3\Scripts\conda.exe')
 ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
 
-if (-not $existingManager -and -not $knownConda) {
-    if (Test-Path -LiteralPath $miniforgePath) {
-        throw "Directory already exists but Miniforge is not detected: $miniforgePath. Check that installation before proceeding."
+if (-not $existingManager -and -not $knownManager) {
+    Write-Host 'No environment manager detected. Installing lightweight Micromamba...'
+    if (-not (Get-Command tar.exe -CommandType Application -ErrorAction SilentlyContinue)) {
+        throw 'Windows tar.exe is required to extract Micromamba.'
     }
-
-    Write-Host 'No Conda or Micromamba installation detected. Installing Miniforge for this user...'
-    $miniforgeUrl = 'https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Windows-x86_64.exe'
-    $download = Join-Path $env:TEMP ('Miniforge3-' + [Guid]::NewGuid().ToString('N') + '.exe')
+    $work = Join-Path $env:TEMP ('asp-micromamba-' + [Guid]::NewGuid().ToString('N').Substring(0,8))
+    New-Item -ItemType Directory -Path $work -Force | Out-Null
     try {
-        Invoke-WebRequest -Uri $miniforgeUrl -OutFile $download -UseBasicParsing
-        # Miniforge uses an NSIS installer. The /D= installation path must be last.
-        $arguments = @('/S', '/InstallationType=JustMe', '/RegisterPython=0', '/AddToPath=0', "/D=$miniforgePath")
-        $process = Start-Process -FilePath $download -ArgumentList $arguments -Wait -PassThru
-        if ($process.ExitCode -ne 0) { throw "Miniforge installation failed (exit code $($process.ExitCode))." }
-        if (-not (Test-Path -LiteralPath $miniforgeConda -PathType Leaf)) {
-            throw "Miniforge installer finished but conda.exe was not found at: $miniforgeConda"
-        }
+        $archive = Join-Path $work 'micromamba.tar.bz2'
+        Invoke-WebRequest -Uri 'https://micro.mamba.pm/api/micromamba/win-64/latest' -OutFile $archive -UseBasicParsing
+        & tar.exe -xf $archive -C $work 'Library/bin/micromamba.exe'
+        if ($LASTEXITCODE -ne 0) { throw "Micromamba extraction failed (exit code $LASTEXITCODE)." }
+        $extracted = Join-Path $work 'Library\bin\micromamba.exe'
+        if (-not (Test-Path -LiteralPath $extracted -PathType Leaf)) { throw 'Micromamba executable not found in downloaded archive.' }
+        New-Item -ItemType Directory -Path (Split-Path $micromambaExe -Parent) -Force | Out-Null
+        Copy-Item -LiteralPath $extracted -Destination $micromambaExe -ErrorAction Stop
+        & $micromambaExe --version
+        if ($LASTEXITCODE -ne 0) { throw 'Micromamba executable verification failed.' }
     } finally {
-        Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     }
-    Write-Host 'Miniforge installed successfully.' -ForegroundColor Green
+    Write-Host 'Micromamba installed successfully.' -ForegroundColor Green
 } else {
-    Write-Host 'An existing environment manager was detected; no additional manager will be installed.'
+    Write-Host 'Existing environment manager detected; no additional manager will be installed.'
 }
 
-Write-Host 'Downloading and running the standard ASP workflow installer...'
-Invoke-WebRequest -Uri $workflowUrl -OutFile $workflowScript -UseBasicParsing
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $workflowScript
-if ($LASTEXITCODE -ne 0) {
-    throw "Pléiades ASP installation failed (exit code $LASTEXITCODE)."
+# Provide a default Micromamba root for newly installed Micromamba.
+# Preserve an explicit user setting when present.
+if ((Test-Path -LiteralPath $micromambaExe -PathType Leaf) -and -not $env:MAMBA_ROOT_PREFIX) {
+    $env:MAMBA_ROOT_PREFIX = $micromambaRoot
 }
-Write-Host 'Pléiades ASP workflow setup completed.' -ForegroundColor Green
+
+$installer = Join-Path $env:TEMP ('asp-install-' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.ps1')
+try {
+    Write-Host 'Running the standard Pléiades ASP workflow installer...'
+    Invoke-WebRequest -Uri $scriptUrl -OutFile $installer -UseBasicParsing
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
+    if ($LASTEXITCODE -ne 0) { throw "Pléiades ASP installation failed (exit code $LASTEXITCODE)." }
+    Write-Host 'Pléiades ASP Workflow setup completed.' -ForegroundColor Green
+} finally {
+    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+}
