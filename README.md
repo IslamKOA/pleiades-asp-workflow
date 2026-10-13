@@ -105,6 +105,22 @@ The installer automatically:
 
 By default, **ASP 3.3.0** is installed, matching the reference version used in the associated study.
 
+##### First-time Windows installation (without Conda or Micromamba)
+
+If you do not already have Micromamba, Mamba, Miniforge, Miniconda, or Anaconda, use the **optional first-time setup script**. It installs Miniforge for the current Windows user, then launches the standard installer above. Existing environments are not deleted.
+
+Open Windows PowerShell:
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows_first_time.ps1" `
+  -OutFile "$HOME\\Downloads\\install_windows_first_time.ps1"
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$HOME\\Downloads\\install_windows_first_time.ps1"
+```
+
+The first-time installer requires an internet connection and may request Windows permissions to install WSL/Ubuntu. The conventional `install_windows.ps1` remains the recommended option when an environment manager is already installed.
+
 ##### Update an existing installation
 
 To update the workflow, download the latest installer and run it again:
