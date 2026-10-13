@@ -90,6 +90,7 @@ Open **Windows PowerShell** and download the installer:
 Invoke-WebRequest `
   -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" `
   -OutFile "$HOME\Downloads\install_windows.ps1"
+powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows.ps1"
 ```
 
 Run the downloaded installer:
