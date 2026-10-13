@@ -50,7 +50,7 @@ conda activate pleiades_asp
 
 The Windows installer automatically creates the `pleiades_asp` environment with Python 3.11 and installs the required dependencies. **Manual Python environment creation or activation is not required.**
 
-An existing installation of **Micromamba, Mamba, Miniforge, Miniconda, or Anaconda** is required. The installer automatically detects the available environment manager.
+**No existing Conda or Micromamba installation is required.** On a new Windows computer, use the [first-time installer](#first-time-windows-installation-without-conda-or-micromamba): it automatically installs lightweight **Micromamba**, then sets up the `pleiades_asp` environment, JupyterLab, WSL, and ASP. If an environment manager is already installed, use the standard Windows installer instead; it detects and reuses the existing manager.
 
 ---
 
@@ -107,7 +107,7 @@ By default, **ASP 3.3.0** is installed, matching the reference version used in t
 
 ##### First-time Windows installation (without Conda or Micromamba)
 
-If you do not already have Micromamba, Mamba, Miniforge, Miniconda, or Anaconda, use the **optional first-time setup script**. It installs Miniforge for the current Windows user, then launches the standard installer above. Existing environments are not deleted.
+If you do not already have Micromamba, Mamba, Miniforge, Miniconda, or Anaconda, use the **optional first-time setup script**. It installs the lightweight standalone **Micromamba** for the current Windows user, then launches the standard installer above. Existing environments are not deleted.
 
 Open Windows PowerShell:
 
@@ -119,7 +119,7 @@ Invoke-WebRequest `
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$HOME\\Downloads\\install_windows_first_time.ps1"
 ```
 
-The first-time installer requires an internet connection and may request Windows permissions to install WSL/Ubuntu. The conventional `install_windows.ps1` remains the recommended option when an environment manager is already installed.
+The first-time installer requires an internet connection and may request Windows permissions to install WSL/Ubuntu. Miniforge or a full Anaconda distribution is **not** required. The conventional `install_windows.ps1` remains the recommended option when an environment manager is already installed.
 
 ##### Update an existing installation
 
