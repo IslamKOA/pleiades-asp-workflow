@@ -9218,7 +9218,7 @@ class FullProjectSetupUI(ProjectSetupUI):
             self.final_dsm_summary_details,
             self.final_dsm_results,
 
-            widgets.HTML("<hr><div style='margin:12px 0 10px 0;padding:12px 14px;border-left:6px solid #6a3d9a;background:#f7f2fb;border-radius:3px;'><div style='font-size:20px;font-weight:700;color:#4a2768;'>Optional point-cloud density</div><div style='color:#5f6b76;font-size:13px;margin-top:5px;line-height:1.5;'>Open the independent LAZ export and point-density notebook for testing. Requires ASP 3.5.0+ with --save-triangulation-error and PDAL. Configure its metadata-file path before running.</div></div>"),
+            widgets.HTML("<hr><div style='margin:12px 0 10px 0;padding:12px 14px;border-left:6px solid #6a3d9a;background:#f7f2fb;border-radius:3px;'><div style='font-size:20px;font-weight:700;color:#4a2768;'>Optional point-cloud density</div><div style='color:#5f6b76;font-size:13px;margin-top:5px;line-height:1.5;'>Open the independent LAZ export and point-density notebook for testing. Requires ASP 3.5.0+ with --save-triangulation-error and PDAL. Set its point-cloud folder and target CRS directly in User settings before running.</div></div>"),
             self.open_point_density_notebook,
             self.point_density_status,
             self.point_density_output,
@@ -12714,8 +12714,8 @@ class FullProjectSetupUI(ProjectSetupUI):
                 "background:#f7f2fb;color:#444;font-size:12px;line-height:1.5;'>"
                 "<b>Point-density notebook ready.</b><br>"
                 f"<b>Notebook:</b> <code>{html.escape(str(template))}</code><br>"
-                "Before running: set <code>METADATA_FILE</code> to your project's "
-                "Bash metadata file and use ASP 3.5.0+ with PDAL. "
+                "Before running: enter <code>POINT_CLOUD_DIR</code> and "
+                "<code>TARGET_SRS</code> directly, and use ASP 3.5.0+ with PDAL. "
                 "Opening this notebook does not execute any point-cloud operations."
                 "</div>"
             )
