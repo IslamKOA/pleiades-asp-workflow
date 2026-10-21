@@ -29,6 +29,7 @@ MANAGED_ITEMS = (
     "figures",
     "examples",
     "coregistration",
+    "point_density",
 )
 
 
