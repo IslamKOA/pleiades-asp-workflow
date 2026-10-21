@@ -85,5 +85,6 @@ pleiades_asp_workflow = [
     "interface_bundle/figures/**/*",
     "interface_bundle/examples/**/*",
     "interface_bundle/coregistration/**/*",
+    "interface_bundle/point_density/**/*",
     "interface_bundle/original_notebooks/**/*",
 ]
