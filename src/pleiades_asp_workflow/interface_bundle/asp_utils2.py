@@ -8835,6 +8835,20 @@ class FullProjectSetupUI(ProjectSetupUI):
         self.final_dsm_results = widgets.VBox()
 
         # ----------------------------------------------------
+        # OPTIONAL POINT-DENSITY NOTEBOOK (independent)
+        # ----------------------------------------------------
+        self.open_point_density_notebook = widgets.Button(
+            description="Open optional point-density notebook",
+            button_style="info",
+            icon="external-link",
+            layout=widgets.Layout(width="340px", height="42px"),
+        )
+        self.point_density_status = widgets.HTML(
+            "<span style='color:#666;font-size:12px;'>Optional LAZ export and average point-density summary; no automatic processing.</span>"
+        )
+        self.point_density_output = widgets.Output()
+
+        # ----------------------------------------------------
         # OPTIONAL CO-REGISTRATION HANDOFF
         # ----------------------------------------------------
         self.open_coregistration_notebook = widgets.Button(
@@ -9040,6 +9054,9 @@ class FullProjectSetupUI(ProjectSetupUI):
 
         self._on_triangulation_filter_mode_change()
 
+        self.open_point_density_notebook.on_click(
+            self._on_open_point_density_notebook
+        )
         self.open_coregistration_notebook.on_click(
             self._on_open_coregistration_notebook
         )
@@ -9201,6 +9218,11 @@ class FullProjectSetupUI(ProjectSetupUI):
             self.final_dsm_summary_details,
             self.final_dsm_results,
 
+            widgets.HTML("<hr><div style='margin:12px 0 10px 0;padding:12px 14px;border-left:6px solid #6a3d9a;background:#f7f2fb;border-radius:3px;'><div style='font-size:20px;font-weight:700;color:#4a2768;'>Optional point-cloud density</div><div style='color:#5f6b76;font-size:13px;margin-top:5px;line-height:1.5;'>Open the independent LAZ export and point-density notebook for testing. Requires ASP 3.5.0+ with --save-triangulation-error and PDAL. Configure its metadata-file path before running.</div></div>"),
+            self.open_point_density_notebook,
+            self.point_density_status,
+            self.point_density_output,
+
             widgets.HTML("<hr><div style='margin:12px 0 10px 0;padding:12px 14px;border-left:6px solid #6a3d9a;background:#f7f2fb;border-radius:3px;'><div style='font-size:20px;font-weight:700;color:#4a2768;'>6. Optional co-registration</div><div style='color:#5f6b76;font-size:13px;margin-top:5px;line-height:1.5;'>Co-registration is intentionally kept outside ASP as the final optional workflow step. Open the supplied xDEM notebook only when an external reference/stable-area correction is required.</div></div>"),
             self.open_coregistration_notebook,
             self.coregistration_status,
@@ -9316,6 +9338,12 @@ class FullProjectSetupUI(ProjectSetupUI):
             self.point_cloud_results.children = ()
         if hasattr(self, "final_dsm_results"):
             self.final_dsm_results.children = ()
+        if hasattr(self, "point_density_status"):
+            self.point_density_status.value = (
+                "<span style='color:#666;font-size:12px;'>Optional LAZ export and average point-density summary; no automatic processing.</span>"
+            )
+        if hasattr(self, "point_density_output"):
+            self.point_density_output.clear_output()
         if hasattr(self, "coregistration_status"):
             self.coregistration_status.value = ""
         if hasattr(self, "coregistration_output"):
@@ -12662,6 +12690,64 @@ class FullProjectSetupUI(ProjectSetupUI):
 
         finally:
             self.run_point_cloud.disabled = self._execution_busy()
+
+    # --------------------------------------------------------
+    # OPTIONAL POINT-DENSITY NOTEBOOK ACTION
+    # --------------------------------------------------------
+    def _on_open_point_density_notebook(self, _):
+        """Open the independent point-density notebook; do not launch processing."""
+        from IPython.display import Javascript, display
+
+        try:
+            template = (
+                Path(__file__).resolve().parent
+                / "point_density"
+                / "08_Optional_LAZ_Export_and_Point_Density.ipynb"
+            )
+            if not template.is_file():
+                raise FileNotFoundError(
+                    f"Point-density notebook not found:\n{template}"
+                )
+
+            self.point_density_status.value = (
+                "<div style='margin:7px 0;padding:9px 11px;border-left:4px solid #6a3d9a;"
+                "background:#f7f2fb;color:#444;font-size:12px;line-height:1.5;'>"
+                "<b>Point-density notebook ready.</b><br>"
+                f"<b>Notebook:</b> <code>{html.escape(str(template))}</code><br>"
+                "Before running: set <code>METADATA_FILE</code> to your project's "
+                "Bash metadata file and use ASP 3.5.0+ with PDAL. "
+                "Opening this notebook does not execute any point-cloud operations."
+                "</div>"
+            )
+
+            # Open the copy staged next to the main notebook in the workspace.
+            # Match the Jupyter-server-relative approach used by co-registration.
+            script = f"""
+            (function() {{
+                const notebookName = {json.dumps(template.name)};
+                const relative = 'point_density/' + encodeURIComponent(notebookName);
+                const path = window.location.pathname;
+                let url;
+                if (path.includes('/lab/tree/') || path.includes('/notebooks/')) {{
+                    const currentDir = path.substring(0, path.lastIndexOf('/') + 1);
+                    url = currentDir + relative;
+                }} else {{
+                    url = new URL(relative, window.location.href).href;
+                }}
+                window.open(url, '_blank');
+            }})();
+            """
+            with self.point_density_output:
+                display(Javascript(script))
+
+        except Exception as exc:
+            self.point_density_status.value = (
+                "<div style='margin:7px 0;padding:9px 11px;border-left:4px solid #b00020;"
+                "background:#fff4f4;color:#444;font-size:12px;'>"
+                "<b>Point-density notebook could not be opened.</b><br>"
+                + html.escape(type(exc).__name__ + ": " + str(exc)) +
+                "</div>"
+            )
 
     # --------------------------------------------------------
     # OPTIONAL CO-REGISTRATION ACTION
