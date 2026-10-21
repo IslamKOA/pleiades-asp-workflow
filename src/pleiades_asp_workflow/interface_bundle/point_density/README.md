@@ -1,34 +1,43 @@
 # Optional LAZ export and point-cloud density
 
-This folder contains an **independent, optional** notebook:
+This folder contains the independent, optional notebook:
 
 `08_Optional_LAZ_Export_and_Point_Density.ipynb`
 
-It is a copy of the research notebook in `original_notebooks/`. The
-main stereo reconstruction, DSM rasterization, and co-registration workflow
-are **not modified** by adding this notebook.
+This is a **standalone interface/testing copy** of the original research notebook
+kept under `original_notebooks/`. No Bash metadata file or `.sh` configuration
+is needed for this copy.
 
-## Before running
+## Configure in the first settings cell
 
-1. Open the notebook separately from the Pléiades ASP Workflow interface
-   (or from Jupyter's file browser).
-2. Set `METADATA_FILE` in the **USER SETTINGS** cell to the Bash metadata
-   configuration for **your own dataset**. The default value
-   `Metadata-Copy1.sh` is an example and that file is not automatically
-   installed in this folder. Select the original configuration file explicitly.
-3. Run in an environment with **ASP 3.5.0 or later**, providing `point2las`
-   and the `--save-triangulation-error` option, and with **PDAL** available.
-   The notebook checks these requirements before processing. If your main
-   processing used ASP 3.3, you can keep that installation unchanged and
-   choose an ASP 3.5+ environment for this optional notebook.
-4. Review its input paths, triangulation-error threshold, and overwrite
-   settings before exporting anything.
+Set these three values directly:
 
-The notebook exports existing `*-PC.tif` point clouds to LAZ and saves
-`laz_export_manifest.csv` and `point_density_summary.csv`. Its reported
-density is the retained LAZ point count divided by the rectangular
-horizontal bounding-box area (average points per square metre). It does
-**not** compute one value for every 1 x 1 m cell.
+- `POINT_CLOUD_DIR`: the folder containing existing ASP `*-PC.tif` files.
+  The notebook searches recursively, so you can select your project's
+  `full_data/asp_out` or `cropped_data/asp_out` and include both
+  `point_clouds/` and `point_clouds_merged/`.
+- `TARGET_SRS`: the actual projected CRS of your analysis, such as
+  `"EPSG:32632"` or `"EPSG:32631"` (metre units).
+- `MAX_VALID_TRIANGULATION_ERROR`: the point export filtering threshold
+  in metres, e.g. `1.0`, matching your experimental configuration.
 
-Opening the notebook does not automatically start an ASP job or alter the
-main workflow inputs.
+If ASP is not available from the Jupyter kernel environment, set
+`ASP_BIN_DIR` to the bin folder of an **ASP 3.5.0 or later** installation,
+or use the `USE_MICROMAMBA` option. The notebook uses `point2las` with
+`--save-triangulation-error`, which is unavailable in ASP 3.3.
+Set `PDAL_BIN_DIR` only if PDAL is also outside the kernel's PATH.
+
+`LAZ_OUTPUT_DIR_OVERRIDE=None` saves the exported LAZ files and CSV summaries
+in `<POINT_CLOUD_DIR>/laz`. Review the discovery preview before exporting.
+
+## Result and scope
+
+The notebook writes `laz_export_manifest.csv` and
+`point_density_summary.csv`. Reported point density is the retained LAZ
+point count divided by its rectangular horizontal bounding-box area
+(average points/m²), **not** the number of points counted individually
+in each 1 m × 1 m raster cell.
+
+Opening the notebook through the main Jupyter workflow interface **does not**
+run processing automatically. The ASP stereo reconstruction and DSM rasterization
+steps remain independent and unchanged.
