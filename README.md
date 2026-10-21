@@ -68,13 +68,28 @@ asp-install 3.3.0
 pleiades-workflow-init
 ```
 
-##### From the GitHub repository
+##### From the GitHub repository (first-time installation)
 
 ```bash
 python -m pip install --upgrade git+https://github.com/IslamKOA/pleiades-asp-workflow.git
 asp-install 3.3.0
 pleiades-workflow-init
 ```
+
+##### Update an existing Linux installation
+
+Activate the Python environment in which Pléiades ASP Workflow is already installed, then run:
+
+```bash
+python -m pip install --upgrade --force-reinstall --no-deps "git+https://github.com/IslamKOA/pleiades-asp-workflow.git@main"
+pleiades-workflow-init
+```
+
+`--force-reinstall` fetches and reinstalls the latest GitHub workflow code even if the package version number has not changed. `--no-deps` keeps the dependencies in your existing working environment untouched; for a first-time install or missing dependencies, use the full installation instructions above.
+
+**Important:** `pleiades-workflow-init` updates **and overwrites** the package-managed workspace files, including `Pleiades_ASP_Workflow.ipynb`, `coregistration/`, and `point_density/`, even if those files already exist. Back up any personal edits to package-managed notebooks before updating. Files in `data/` and unrelated user-created files are preserved. Use `pleiades-workflow-init /your/custom/workspace/path` if your workspace is not in the default `~/Pleiades_ASP_Workflow` folder.
+
+You do **not** need to rerun `asp-install 3.3.0` just to update the Python workflow or notebooks. Close running notebook kernels and reopen the interface after updating.
 
 ---
 
@@ -450,8 +465,10 @@ pleiades-workflow-info
 Refresh an existing notebook workspace after updating the package:
 
 ```bash
-pleiades-workflow-init --force
+pleiades-workflow-init
 ```
+
+This command already replaces package-managed interface files. The `--force` option is **not required** for normal updates; it additionally allows package-provided files in the normally preserved `data/` folder to be overwritten.
 
 On Windows, ASP runs through Linux/WSL. The package contains a Windows-to-WSL bridge for the managed ASP installation.
 
@@ -464,7 +481,6 @@ The generated workspace contains the public notebook and the runtime modules/ass
 ```text
 ~/Pleiades_ASP_Workflow/
 ├── Pleiades_ASP_Workflow.ipynb
-├── asp_utils2.py
 ├── prepare_stereo_metadata_and_geometry.py
 ├── pleiades_reference_dem.py
 ├── global_dem_downloader.py
@@ -472,11 +488,13 @@ The generated workspace contains the public notebook and the runtime modules/ass
 ├── vertical_reference.py
 ├── requirements_interface.txt
 ├── coregistration/
-├── original_notebooks/
+├── point_density/
 ├── figures/
 ├── examples/
 └── data/
 ```
+
+The `original_notebooks/` directory is optional developer/reference material and is added with `pleiades-workflow-init --developer`. The interface code `asp_utils2.py` is imported from the installed Python package rather than copied to the workspace.
 
 ## Data and redistribution
 
