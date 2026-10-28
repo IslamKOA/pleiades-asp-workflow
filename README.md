@@ -163,6 +163,8 @@ powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows.ps1"
 
 The installer refreshes the Python package and package-managed notebook files together while preserving user project data. Close any running JupyterLab sessions before updating.
 
+**Windows / Conda troubleshooting:** If a previous installer failed at `Verify environment Python (>=3.10)` with `SyntaxError: '(' was never closed` or `print(WASA-DEM`, that was an installer quoting issue, **not a missing Python installation**. Download the current `install_windows.ps1` again and rerun it. The verification now executes temporary Python script files instead of `python -c` through `conda run`, and it retains the existing `pleiades_asp` environment. If a desktop shortcut was already created, it can remain in place.
+
 ##### Optional: Select another ASP version
 
 To request another ASP version, define it before running the installer. For example:

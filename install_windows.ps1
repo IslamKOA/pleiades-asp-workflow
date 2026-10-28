@@ -183,7 +183,20 @@ if (-not $environmentExists) {
 }
 # Verify the real Python inside the managed environment. Never use Windows'
 # Python app alias or a possibly unrelated system-level python.exe.
-Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'python', '-c', 'import sys; print("WASA-DEM Python:", sys.executable, sys.version); assert sys.version_info >= (3, 10)') 'Verify environment Python (>=3.10)'
+# Avoid Conda's Windows python -c quoting behavior: some Conda versions
+# strip embedded quotes and produce invalid Python even with a valid env.
+# Run a temporary Python file instead, without relying on system python.exe.
+$pythonCheck = Join-Path $env:TEMP ('wasa-dem-python-check-' + [Guid]::NewGuid().ToString('N') + '.py')
+@(
+    'import sys'
+    'print("WASA-DEM Python:", sys.executable, sys.version)'
+    'assert sys.version_info >= (3, 10), "WASA-DEM requires Python >= 3.10"'
+) | Set-Content -LiteralPath $pythonCheck -Encoding UTF8
+try {
+    Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'python', $pythonCheck) 'Verify environment Python (>=3.10)'
+} finally {
+    Remove-Item -LiteralPath $pythonCheck -Force -ErrorAction SilentlyContinue
+}
 
 # 2. Download the repository once, ensuring notebook and Python package match.
 Write-Host '[2/7] Downloading GitHub main branch (Git is not required)...'
@@ -268,7 +281,15 @@ try {
     if ($notebookContent -notmatch 'from pleiades_asp_workflow\.interface_bundle import asp_utils2') {
         throw 'The installed notebook does not contain the corrected packaged import. Check the committed GitHub notebook and package data.'
     }
-    Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'python', '-c', "from pleiades_asp_workflow.interface_bundle import asp_utils2; from pleiades_asp_runner.staging import stage_stereo_command; print('Interface:', asp_utils2.__file__)") 'Verify interface and staging imports'
+    # Use a Python script file here as well; no nested quotes are passed
+    # through Windows PowerShell -> Conda run -> Python.
+    $importCheck = Join-Path $tempRoot 'verify_wasa_dem_imports.py'
+    @(
+        'from pleiades_asp_workflow.interface_bundle import asp_utils2'
+        'from pleiades_asp_runner.staging import stage_stereo_command'
+        'print("WASA-DEM interface:", asp_utils2.__file__)'
+    ) | Set-Content -LiteralPath $importCheck -Encoding UTF8
+    Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'python', $importCheck) 'Verify interface and staging imports'
 
     # Add the desktop shortcut without changing existing Python/ASP installations.
     Write-Host '[7/7] Creating/updating WASA-DEM desktop shortcut...'

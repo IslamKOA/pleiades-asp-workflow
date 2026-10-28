@@ -58,3 +58,16 @@ def test_legacy_workspace_and_package_names_unchanged():
     assert 'name = "pleiades-asp-workflow"' in pyproject
     assert 'version = "1.5.4"' in pyproject
     assert 'DEFAULT_DIRECTORY = Path.home() / "Pleiades_ASP_Workflow"' in workspace
+
+
+def test_windows_conda_python_checks_avoid_quoted_inline_code():
+    # Conda run on Windows can strip inner Python -c string quotes. Both
+    # checks must be passed as filenames rather than quoted Python snippets.
+    script = read("install_windows.ps1")
+    assert "wasa-dem-python-check-" in script
+    assert "verify_wasa_dem_imports.py" in script
+    assert "'python', $pythonCheck" in script
+    assert "'python', $importCheck" in script
+    assert "'python', '-c'" not in script
+    assert "Remove-Item -LiteralPath $pythonCheck" in script
+    assert "Remove-Item -LiteralPath $tempRoot -Recurse" in script

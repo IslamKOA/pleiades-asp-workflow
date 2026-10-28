@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — Windows Conda Python validation hotfix
+
+- Fixed the Windows installer failing with `SyntaxError: '(' was never closed` when Conda stripped quotes from the inline `python -c` verification argument.
+- Both Python and interface-import smoke tests now use temporary `.py` scripts rather than inline code, with cleanup after verification.
+- The existing `pleiades_asp` environment and desktop shortcut remain valid; no reinstall of Conda or Python is needed to resolve this error.
+- Added a regression assertion guarding against reintroducing inline `python -c` checks on Windows.
+
+
 ## Unreleased — ASP 3.5.0 point2las companion and WASA-DEM desktop icon
 
 - Added `point2las` console wrapper, automatically selecting an independent ASP 3.5.0 companion when the main workflow is pinned to ASP 3.3.0 or 3.4.0. Main ASP version and stereo processing logic remain unchanged.
