@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — Official square logo without lower terrain
+
+- Selected the high-contrast two-line **WASA / DEM** logo with an optical satellite and stylized mountain peaks as the official software logo.
+- Added `assets/WASA-DEM-official-logo.jpg` and replaced `assets/WASA-DEM.ico` with an eight-resolution (16–256 px) Windows desktop icon derived from the approved design.
+- Updated the README thumbnail to the official compact logo; retained `assets/WASA-DEM-approved-artwork.jpg` with the rainbow DSM as separate scientific/presentation artwork.
+- The Windows shortcut creator now directly uses the bundled official ICO from GitHub and automatically refreshes desktop icons for new installs or updates. No JPG-to-ICO conversion or additional Python libraries are required.
+- Existing Python environments, scripts, ASP processing versions, project paths, package release metadata and archived DOI are unchanged.
+
+
 ## Unreleased — Approved WASA-DEM artwork and clearer cross-platform installation
 
 - Published the selected polished WASA-DEM artwork at `assets/WASA-DEM-approved-artwork.jpg` and displayed it at the top of the README in place of the previous banner.
