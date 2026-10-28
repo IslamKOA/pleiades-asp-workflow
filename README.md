@@ -16,6 +16,8 @@
 
 For reproducibility of the associated study, the reference processing version is **Ames Stereo Pipeline 3.3.0**.
 
+**Quick links:** [Install or update](#installation-and-updates) · [WASA-DEM capabilities](#what-this-package-provides) · [Research software DOI](https://doi.org/10.57745/4OQDHQ) · [Related geodesy software: ElevDatum](https://github.com/IslamKOA/geodetic-elevation-data-toolkit)
+
 ## What this package provides
 
 - Guided preparation of Pléiades / Pléiades NEO / SPOT imagery and metadata.
