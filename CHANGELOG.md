@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — ASP 3.5.0 point2las companion and WASA-DEM desktop icon
+
+- Added `point2las` console wrapper, automatically selecting an independent ASP 3.5.0 companion when the main workflow is pinned to ASP 3.3.0 or 3.4.0. Main ASP version and stereo processing logic remain unchanged.
+- Added `asp-pdal` wrapper for the companion distribution's PDAL CLI, where present; the optional point-density notebook retains external PDAL overrides.
+- Updated the standalone LAZ export/point-density notebook to use the managed wrappers by default while preserving its user-configurable tool paths and output logic.
+- Enhanced the Windows desktop shortcut generator to use a supplied `WASA-DEM.ico` from the workspace or Downloads, or via `-IconPath`.
+- Added regression tests for companion version routing, caching, and preservation of the main ASP selection.
+
+
 ## Unreleased — Robust Windows/Linux environment bootstrapping
 
 - Windows now checks available Conda, Mamba, and Micromamba managers in PATH, common installation directories, and environment-variable locations rather than assuming `python.exe` is globally accessible.
