@@ -1,8 +1,12 @@
 # WASA-DEM
 
+![WASA-DEM satellite stereo and digital elevation model software banner](assets/WASA-DEM-GitHub-banner.svg)
+
 **Workflow for Ames-based Satellite Analysis and Digital Elevation Model Generation**
 
 **Current software version: v1.5.4** · Formerly named *Pléiades ASP Workflow*
+
+**Brand assets:** [Windows desktop icon](assets/WASA-DEM.ico) · [Square logo](assets/WASA-DEM-logo.svg) · [GitHub banner](assets/WASA-DEM-GitHub-banner.svg). The desktop icon is refreshed automatically from the repository during Windows installation and updates.
 
 **WASA-DEM** is a reproducible, open-source **Python- and Jupyter-based workflow** for optical satellite stereo and tri-stereo photogrammetry, 3D point-cloud reconstruction, and high-resolution **digital surface model (DSM)** generation using the **NASA Ames Stereo Pipeline (ASP)**. The current implementation supports **Pléiades, Pléiades NEO, and SPOT 6/7**.
 
