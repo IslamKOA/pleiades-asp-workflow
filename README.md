@@ -1,12 +1,10 @@
 # WASA-DEM
 
-![WASA-DEM: satellite-based optical stereo, 3D reconstruction and digital elevation model generation](assets/WASA-DEM-approved-artwork.jpg)
+<a href="assets/WASA-DEM-approved-artwork.jpg"><img src="assets/WASA-DEM-approved-artwork.jpg" alt="WASA-DEM satellite stereo and DEM generation branding" align="right" width="170"></a>
 
 **Workflow for Ames-based Satellite Analysis and Digital Elevation Model Generation**
 
 **Current software version: v1.5.4** · Formerly named *Pléiades ASP Workflow*
-
-**Brand assets:** [Approved WASA-DEM artwork](assets/WASA-DEM-approved-artwork.jpg) · [Scalable logo](assets/WASA-DEM-logo.svg) · [Legacy fallback ICO](assets/WASA-DEM.ico). The Windows shortcut automatically creates its icon from the **approved artwork** during installation or refresh, with the legacy ICO available as a fallback.
 
 **WASA-DEM** is a reproducible, open-source **Python- and Jupyter-based workflow** for optical satellite stereo and tri-stereo photogrammetry, 3D point-cloud reconstruction, and high-resolution **digital surface model (DSM)** generation using the **NASA Ames Stereo Pipeline (ASP)**. The current implementation supports **Pléiades, Pléiades NEO, and SPOT 6/7**.
 
@@ -493,6 +491,10 @@ The archived version of **Pléiades ASP Workflow** is available through **Recher
 
 > **Koa, I., Recking, A., & Borgniet, L. (2026).** *Pléiades ASP Workflow* (Version 1.5.4) [Software]. **Recherche Data Gouv**.  
 > DOI: **https://doi.org/10.57745/4OQDHQ**
+
+## WASA-DEM branding and artwork
+
+The [full-resolution approved design](assets/WASA-DEM-approved-artwork.jpg) is available for presentations, software announcements, and scientific communication. A [scalable logo](assets/WASA-DEM-logo.svg) and a [legacy backup icon](assets/WASA-DEM.ico) are also retained. The Windows installer automatically creates and updates the desktop shortcut icon from the approved artwork.
 
 ## License
 
