@@ -154,26 +154,80 @@ $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $launcherPa
 $shortcut.WorkingDirectory = $Workspace
 $shortcut.Description = 'WASA-DEM - optical satellite stereo DSM workflow'
 $shortcut.WindowStyle = 1
-# Optional user-supplied WASA-DEM mountain/DEM icon. It is intentionally
-# external to the executable so the application icon can be updated safely.
-if (-not $IconPath) {
-    foreach ($candidate in @(
-        (Join-Path $Workspace 'WASA-DEM.ico'),
-        (Join-Path $HOME 'Downloads\WASA-DEM.ico')
-    )) {
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            $IconPath = $candidate
-            break
+# The official icon is distributed WITH the GitHub repository.
+# Install/update: take the image from the downloaded ZIP (offline at this stage).
+# Standalone shortcut setup: fetch the same image from GitHub's main branch.
+# Explicit -IconPath is still supported as a manual override.
+$repoIcon = Join-Path $PSScriptRoot 'assets\WASA-DEM.ico'
+$iconUrl = 'https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/assets/WASA-DEM.ico'
+$canonicalIcon = Join-Path $Workspace 'WASA-DEM.ico'
+$sourceIcon = ''
+$temporaryDownload = ''
+try {
+    if ($IconPath) {
+        if (-not (Test-Path -LiteralPath $IconPath -PathType Leaf)) {
+            throw "Requested WASA-DEM icon not found: $IconPath"
+        }
+        $sourceIcon = [IO.Path]::GetFullPath($IconPath)
+    } elseif (Test-Path -LiteralPath $repoIcon -PathType Leaf) {
+        $sourceIcon = $repoIcon
+        Write-Host "Using WASA-DEM icon bundled with the GitHub repository."
+    } else {
+        # The script may have been downloaded alone rather than run from the
+        # repository ZIP. Fetch its matching default icon automatically.
+        $temporaryDownload = Join-Path $env:TEMP ('wasa-dem-icon-' + [Guid]::NewGuid().ToString('N') + '.ico')
+        try {
+            Invoke-WebRequest -Uri $iconUrl -OutFile $temporaryDownload -UseBasicParsing -ErrorAction Stop
+            $sourceIcon = $temporaryDownload
+            Write-Host "Downloaded official WASA-DEM icon from GitHub."
+        } catch {
+            if (Test-Path -LiteralPath $canonicalIcon -PathType Leaf) {
+                $sourceIcon = $canonicalIcon
+                Write-Warning "GitHub icon download failed; reusing the locally cached WASA-DEM icon."
+            } else {
+                throw ("Could not download the official WASA-DEM icon from GitHub: " + $_.Exception.Message)
+            }
         }
     }
-}
-if ($IconPath) {
-    if (-not (Test-Path -LiteralPath $IconPath -PathType Leaf)) {
-        throw "Requested WASA-DEM icon not found: $IconPath"
+    $iconFile = Get-Item -LiteralPath $sourceIcon -ErrorAction Stop
+    $magic = @(Get-Content -LiteralPath $sourceIcon -Encoding Byte -TotalCount 6 -ErrorAction Stop)
+    if ($iconFile.Length -lt 1024 -or $magic.Count -lt 6 -or
+        $magic[0] -ne 0 -or $magic[1] -ne 0 -or $magic[2] -ne 1 -or $magic[3] -ne 0) {
+        throw "The downloaded file is not a valid Windows .ico image: $sourceIcon"
     }
-    $shortcut.IconLocation = ([IO.Path]::GetFullPath($IconPath) + ',0')
+    # A content-hashed filename ensures Windows does not keep showing an older
+    # icon from Explorer's cache when the official GitHub image changes.
+    $iconHash = (Get-FileHash -LiteralPath $sourceIcon -Algorithm SHA256).Hash.Substring(0, 12).ToLowerInvariant()
+    $versionedIcon = Join-Path $Workspace ("WASA-DEM-" + $iconHash + ".ico")
+    if (-not (Test-Path -LiteralPath $versionedIcon -PathType Leaf)) {
+        Copy-Item -LiteralPath $sourceIcon -Destination $versionedIcon -Force
+    }
+    if (-not ([IO.Path]::GetFullPath($sourceIcon) -ieq [IO.Path]::GetFullPath($canonicalIcon))) {
+        Copy-Item -LiteralPath $sourceIcon -Destination $canonicalIcon -Force
+    }
+    $shortcut.IconLocation = "$versionedIcon,0"
+    $shortcut.Save()
+    Write-Host "Official GitHub icon applied: $versionedIcon" -ForegroundColor Green
+} finally {
+    if ($temporaryDownload -and (Test-Path -LiteralPath $temporaryDownload -PathType Leaf)) {
+        Remove-Item -LiteralPath $temporaryDownload -Force -ErrorAction SilentlyContinue
+    }
 }
-$shortcut.Save()
+
+# Ask Explorer to reload shortcut icons, without restarting the desktop shell.
+try {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class WASADemIconRefresh {
+    [DllImport("shell32.dll")]
+    public static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
+}
+'@ -ErrorAction Stop
+    [WASADemIconRefresh]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+} catch {
+    Write-Host 'If the icon is cached, right-click the Windows Desktop and select Refresh (F5).' -ForegroundColor Yellow
+}
 
 Write-Host "Desktop shortcut ready: $shortcutPath" -ForegroundColor Green
 Write-Host "It opens the existing notebook using $ManagerName and the $EnvironmentName environment."
