@@ -193,6 +193,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Downloads\create_wasa
 
 This places `WASA-DEM.lnk` on your actual Windows Desktop (including OneDrive-redirected desktops). It also creates `Launch_WASA-DEM.ps1` and `wasa_dem_launcher.json` beside your existing notebook. No project data, notebook names, environments, or outputs are renamed. To configure a nonstandard workspace, pass `-Workspace "C:\path\to\your\workspace"` to the shortcut setup script.
 
+**Custom WASA-DEM mountain icon:** Save the supplied `WASA-DEM.ico` in your Windows `Downloads` folder or your existing `Pleiades_ASP_Workflow` folder, then rerun `create_wasa_dem_shortcut.ps1`. It automatically finds the icon and assigns it to the desktop shortcut. You may also specify `-IconPath "C:\path\to\WASA-DEM.ico"`. This does not change processing, data, or environments.
+
 If the shortcut cannot be created (for example because Windows blocks shell shortcuts), the existing manual launch commands below still work.
 
 
@@ -433,6 +435,22 @@ coregistration/Coregistration_Process-Final-withPlannimetric.ipynb
 ```
 
 The notebook contains the latest xDEM / Nuth & Kääb workflow used during development. Review its **INPUTS** cell before execution, especially the final DSM, external reference DEM, and stable-area inputs.
+
+## Optional LAZ export and point-cloud density
+
+The separate [LAZ export and point-cloud density notebook](src/pleiades_asp_workflow/interface_bundle/point_density/README.md) converts ASP `*-PC.tif` point clouds to LAZ, optionally retains the triangulation error in LAS 1.4, and reports rectangular bounding-box point density.
+
+**ASP version isolation:** When the main stereo workflow uses **ASP 3.3.0 or 3.4.0**, WASA-DEM's `point2las` wrapper automatically selects a separate **ASP 3.5.0** companion installation on first use. Only `point2las` and the optional `asp-pdal` wrapper use this companion; `bundle_adjust`, `parallel_stereo`, `point2dem`, and the remaining main commands retain the selected ASP release. ASP 3.5.0 is distributed as an archive with its runtime libraries, so the companion installation downloads the full distribution rather than copying an isolated binary.
+
+```bash
+# In the installed WASA-DEM environment:
+asp-version             # the active/main ASP version is unchanged
+point2las --version     # loads ASP 3.5.0 when main ASP is 3.3/3.4
+point2las --help        # includes --save-triangulation-error in ASP >=3.5
+asp-pdal --version      # uses PDAL from the companion if bundled
+```
+
+The companion is cached and reused. For PDAL that is not included as an executable in an ASP distribution, set `PDAL_BIN_DIR` to a separate installed PDAL CLI in the optional notebook. You can still select a different main ASP release with `asp-install X.Y.Z`; this changes the main workflow, but never forces the companion version to become active.
 
 ## Original scientific notebooks
 
