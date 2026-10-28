@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — Approved WASA-DEM artwork and clearer cross-platform installation
+
+- Published the selected polished WASA-DEM artwork at `assets/WASA-DEM-approved-artwork.jpg` and displayed it at the top of the README in place of the previous banner.
+- Updated the Windows shortcut creator to use the new official artwork from the downloaded GitHub repository (or retrieve it when launched standalone), converting it to a multi-resolution Windows ICO with built-in Windows PowerShell/.NET System.Drawing. The earlier ICO remains an offline fallback.
+- Reorganized the README into distinct Windows/Linux installation and update instructions with platform-specific commands, verification steps, and explicit notebook-backup precautions.
+- Documented the difference between the full Windows installer (which can reinstall dependencies) and lightweight code-only updates in a healthy environment.
+- Retained existing package version, installation directories, Python environment, ASP processing algorithms, and published DOI citation.
+
+
 ## Unreleased — Readable Windows icon and GitHub repository branding
 
 - Simplified the official `assets/WASA-DEM.ico` so the **WASA-DEM** name remains recognizable at small Windows desktop shortcut sizes; the color-relief mountain visual remains underneath the enlarged lettering.

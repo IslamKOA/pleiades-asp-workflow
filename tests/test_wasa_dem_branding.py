@@ -61,7 +61,9 @@ def test_official_icon_is_bundled_and_installed_automatically():
     for marker in (
         "assets\\WASA-DEM.ico",
         "raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/assets/WASA-DEM.ico",
-        "Invoke-WebRequest -Uri $iconUrl",
+        "Invoke-WebRequest -Uri $artworkUrl",
+        "Convert-WasaArtworkToIcon",
+        "System.Drawing.Image",
         "Get-FileHash -LiteralPath $sourceIcon",
         "$shortcut.IconLocation",
         "$shortcut.Save()",
@@ -83,4 +85,25 @@ def test_github_brand_assets_and_readme_links():
     assert "WASA-" in banner and "Digital Elevation Model Generation" in banner
     assert "WASA-" in logo and "DEM" in logo
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "![WASA-DEM satellite stereo and digital elevation model software banner](assets/WASA-DEM-GitHub-banner.svg)" in readme
+    assert "![WASA-DEM: satellite-based optical stereo, 3D reconstruction and digital elevation model generation](assets/WASA-DEM-approved-artwork.jpg)" in readme
+
+
+def test_approved_artwork_and_windows_linux_install_docs():
+    artwork = ROOT / "assets" / "WASA-DEM-approved-artwork.jpg"
+    assert artwork.exists() and artwork.stat().st_size > 10240
+    assert artwork.read_bytes()[:3] == bytes((255, 216, 255))
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    for heading in (
+        "### Windows — new installation",
+        "### Windows — update an existing installation",
+        "### Linux — new installation",
+        "### Linux — update an existing installation",
+        "### Before any update",
+    ):
+        assert heading in readme
+    assert "--no-deps" in readme
+    assert "package-managed notebooks" in readme
+    creator = (ROOT / "create_wasa_dem_shortcut.ps1").read_text(encoding="utf-8")
+    assert "assets\\WASA-DEM-approved-artwork.jpg" in creator
+    assert "WASA-DEM-approved-artwork.jpg" in creator
+    assert "System.Drawing" in creator
