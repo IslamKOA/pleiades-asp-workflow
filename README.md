@@ -1,12 +1,12 @@
 # WASA-DEM
 
-![WASA-DEM satellite stereo and digital elevation model software banner](assets/WASA-DEM-GitHub-banner.svg)
+![WASA-DEM: satellite-based optical stereo, 3D reconstruction and digital elevation model generation](assets/WASA-DEM-approved-artwork.jpg)
 
 **Workflow for Ames-based Satellite Analysis and Digital Elevation Model Generation**
 
 **Current software version: v1.5.4** · Formerly named *Pléiades ASP Workflow*
 
-**Brand assets:** [Windows desktop icon](assets/WASA-DEM.ico) · [Square logo](assets/WASA-DEM-logo.svg) · [GitHub banner](assets/WASA-DEM-GitHub-banner.svg). The desktop icon is refreshed automatically from the repository during Windows installation and updates.
+**Brand assets:** [Approved WASA-DEM artwork](assets/WASA-DEM-approved-artwork.jpg) · [Windows desktop icon](assets/WASA-DEM.ico) · [Scalable logo](assets/WASA-DEM-logo.svg). The desktop icon is retrieved from the repository when a Windows user installs or updates the software.
 
 **WASA-DEM** is a reproducible, open-source **Python- and Jupyter-based workflow** for optical satellite stereo and tri-stereo photogrammetry, 3D point-cloud reconstruction, and high-resolution **digital surface model (DSM)** generation using the **NASA Ames Stereo Pipeline (ASP)**. The current implementation supports **Pléiades, Pléiades NEO, and SPOT 6/7**.
 
@@ -39,216 +39,136 @@ For reproducibility of the associated study, the reference processing version is
 - Runtime summaries and Run / Pause / Resume / Stop controls for long processes.
 - Original scientific notebooks retained under `original_notebooks/` for traceability.
 
-## Installation
+## Installation and updates
 
-WASA-DEM uses **Python 3.10+** (Python **3.11 recommended**) inside a dedicated environment. **No preinstalled system Python or Git is required:** the automatic Windows and Linux installers detect usable Conda/Mamba/Micromamba installations and install standalone Micromamba when none is available.
+**Choose your operating system and task:** [Windows — new installation](#windows--new-installation) · [Windows — update](#windows--update-an-existing-installation) · [Linux — new installation](#linux--new-installation) · [Linux — update](#linux--update-an-existing-installation)
 
-### 1. Prepare the Python environment
+The recommended installers support Python **3.10+** (Python 3.11 for a new environment), prefer an existing usable **Conda/Mamba/Micromamba** installation, and can download standalone Micromamba if none is available. **Git and a separately installed system Python are not required.** Internet connectivity is needed for initial downloads.
 
-#### Linux
+### Before any update
 
-The recommended **automatic installer** creates or reuses the isolated `pleiades_asp` environment even when no system Python, Conda, or Git is installed. It uses a GitHub ZIP archive rather than `git clone`. It requires Bash, tar, internet access and either `curl` or `wget`.
+- **Close JupyterLab and stop running notebooks/processes.** Do not update while stereo processing is running.
+- **Back up any notebooks you edited yourself** outside the installed workspace, particularly `Pleiades_ASP_Workflow.ipynb` and the `coregistration/` and `point_density/` notebooks. The `pleiades-workflow-init` command refreshes **package-managed notebooks**, so edits to these may be overwritten.
+- The installers are designed to **reuse the `pleiades_asp` environment** and preserve user project data (including `data/` and unrelated files). **Do not delete Conda/Micromamba, ASP, WSL, or project folders** before trying an update.
+- Installing from the GitHub **`main`** branch provides the latest changes, even when the Python package version still displays **v1.5.4**. The published Research Data Gouv DOI refers to the originally archived release.
 
-**Next step:** [Continue to Linux installation →](#linux-1)
+### Windows — new installation
 
-#### Windows
+Requirements: Windows 10/11 (64-bit), PowerShell, internet access, and permission to enable **WSL/Ubuntu** if not installed. First-time WSL setup may require administrator approval, a restart, and creation of a Linux user.
 
-**No manual Python environment setup is required.** The standard Windows installer searches PATH, common installation directories and active Conda variables for working managers. It checks which manager owns the `pleiades_asp` environment before creating anything new. If none is usable, it installs standalone Micromamba and Python 3.11 in a dedicated environment. **Git is not required.** [Continue to Windows installation →](#windows-1).
+Open **Windows PowerShell** and run:
 
----
+```powershell
+Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" `
+  -OutFile "$HOME\Downloads\install_windows.ps1"
 
-### 2. Install WASA-DEM
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "$HOME\Downloads\install_windows.ps1"
+```
 
-#### Linux
+The installer checks available environment managers, reuses an existing `pleiades_asp` environment or creates it with Python 3.11, installs WASA-DEM and required Python dependencies, sets up/verifies WSL and ASP, prepares JupyterLab, and creates the **WASA-DEM** desktop shortcut with the official GitHub icon. The interface runs under Windows, while ASP processing uses WSL.
 
-##### Recommended: automatic installation (no Git or preinstalled Python)
+The optional [first-time helper](install_windows_first_time.ps1) now calls **the same standard installer**; you do **not** need to run both scripts.
 
-Download and run the setup script in a Linux terminal:
+### Windows — update an existing installation
+
+**Recommended for repairing installations or installing missing dependencies:** download and rerun the latest standard installer. It reuses a working `pleiades_asp` environment and refreshes the desktop shortcut and icon.
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" `
+  -OutFile "$HOME\Downloads\install_windows.ps1"
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "$HOME\Downloads\install_windows.ps1"
+```
+
+**Important:** The current full Windows installer uses `pip install --upgrade --force-reinstall`, which can reinstall/update Python dependencies. It also checks ASP and overwrites **package-managed** notebook resources. Back up notebook edits first; the full installer is useful for repairs but is not a minimal code-only update.
+
+**Advanced: refresh WASA-DEM code without reinstalling dependencies or ASP** (only when your environment is already working). For an existing **Conda** installation:
+
+```powershell
+conda run -n pleiades_asp python -m pip install --upgrade --force-reinstall --no-deps "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
+conda run -n pleiades_asp pleiades-workflow-init
+```
+
+For an existing **Micromamba** or **Mamba** environment, replace `conda run` with `micromamba run` or `mamba run`, respectively. The manager must be accessible in PowerShell; otherwise use the standard installer, which searches known installation paths. The lightweight commands **do not** install ASP, WSL, or missing dependencies. Initializing the workspace still replaces package-managed notebooks.
+
+**Shortcut/icon only:** if the environment is already working, run [the shortcut creator](create_wasa_dem_shortcut.ps1) alone. It automatically downloads the current WASA-DEM icon from GitHub when the image is not beside the script:
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/create_wasa_dem_shortcut.ps1" `
+  -OutFile "$HOME\Downloads\create_wasa_dem_shortcut.ps1"
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "$HOME\Downloads\create_wasa_dem_shortcut.ps1"
+```
+
+If you encountered `SyntaxError: '(' was never closed` during the old `Verify environment Python` step, download the **latest** installer again: the Windows Conda quoting bug has been corrected. Do not remove the existing Python environment.
+
+**ASP version:** ASP **3.3.0** is the scientific reference and default. To request a different main ASP version in the full installer, set `$env:PLEIADES_ASP_VERSION = "3.4.0"` before launching it. The optional `point2las` export uses an isolated ASP 3.5.0 companion when the selected main version is older than 3.5.0.
+
+### Linux — new installation
+
+Requirements: Linux, Bash, `tar` with bzip2 extraction support, internet connectivity, and `curl` **or** `wget`. Git, global Python, and a preinstalled Conda environment are optional.
 
 ```bash
 curl -fL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh -o install_linux.sh
 bash install_linux.sh
 ```
 
-If `curl` is unavailable but `wget` exists, use:
+If `curl` is missing, use `wget -O install_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh`, then run `bash install_linux.sh`.
+
+The installer detects an existing usable environment manager, reuses `pleiades_asp` or installs standalone Micromamba and Python 3.11 in the user account, installs WASA-DEM from a **GitHub ZIP archive** (not `git clone`), and installs/verifies ASP and initializes the notebook workspace.
+
+On restricted servers, system-level libraries required by the ASP binaries may need administrator assistance. Do **not** use `sudo` to create the Python environment.
+
+### Linux — update an existing installation
+
+If the `pleiades_asp` environment and ASP are already working, activate that environment and update only the WASA-DEM software package:
 
 ```bash
-wget -O install_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh
-bash install_linux.sh
-```
-
-The installer searches existing Conda/Mamba/Micromamba environments (including common installations outside `PATH`), selects a manager containing `pleiades_asp` where possible, or installs standalone Micromamba in your user account. It installs Python inside this environment, **not** globally. WASA-DEM is downloaded from a GitHub ZIP archive, so **Git is optional**.
-
-For a new installation it also installs ASP 3.3.0 and creates the notebook workspace. On restricted Linux servers, the ASP runtime may require missing shared libraries that need system-administrator support. Do not use `sudo` for the Python/Micromamba environment.
-
-##### Manual installation with an existing Python environment
-
-Activate a Python 3.10+ environment with pip and run:
-
-```bash
-python -m pip install --upgrade "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
-asp-install 3.3.0
+python -m pip install --upgrade --force-reinstall --no-deps \
+  "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
 pleiades-workflow-init
 ```
 
-This also works **without Git**. Alternatively, download and extract the source/archive, enter the extracted folder and run `python -m pip install --upgrade .`.
+`--no-deps` preserves installed dependency versions. This is the **recommended lightweight Linux update** when the environment is healthy. The workspace initialization overwrites package-managed notebooks, so back up modifications first.
 
-##### Update an existing Linux installation (without Git)
+If the Python environment, dependencies, or ASP installation is broken or missing, redownload `install_linux.sh` and rerun it as in **Linux — new installation**. It detects/reuses existing resources where possible, but may install/update dependencies and ASP. It does not delete user project data.
 
-Activate the same environment, then run:
+### Launch WASA-DEM
 
-```bash
-python -m pip install --upgrade --force-reinstall --no-deps "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
-pleiades-workflow-init
-```
-
-The `--no-deps` option preserves your installed dependency versions. Use the automatic installer if dependencies, ASP or the Python environment are missing.
-
-**Important:** `pleiades-workflow-init` **overwrites package-managed notebooks**, including `Pleiades_ASP_Workflow.ipynb`, `coregistration/` and `point_density/`. Back up edits to these files before updating. Existing project data inside `data/` and unrelated user files are preserved. For a custom workspace use `pleiades-workflow-init /your/custom/workspace/path`.
-
-You do **not** need to rerun `asp-install 3.3.0` just to refresh Python workflow code. Close running notebook kernels and reopen the interface after updating.
-
----
-
-#### Windows
-
-On Windows 10/11, an automated PowerShell installer prepares the Python environment, installs **WASA-DEM** and its dependencies, configures Windows Subsystem for Linux (WSL), installs NASA Ames Stereo Pipeline, and initializes the JupyterLab workspace.
-
-##### Recommended: automatic Windows installation
-
-Use the same installer whether Conda/Mamba/Micromamba is installed, not on PATH, or entirely absent. Open **Windows PowerShell**:
-
-```powershell
-Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" `
-  -OutFile "$HOME\Downloads\install_windows.ps1"
-powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows.ps1"
-```
-
-The installer automatically:
-
-1. Searches common directories and environment variables for working Micromamba, Mamba or Conda installations; reuses the existing `pleiades_asp` environment, or installs standalone Micromamba when necessary. Verifies the real Python interpreter inside the selected environment.
-2. Downloads and installs the latest workflow from GitHub, including the required Python libraries and JupyterLab.
-3. Detects an existing WSL Linux distribution or installs Ubuntu when necessary.
-4. Downloads, installs, and verifies the official NASA Ames Stereo Pipeline distribution within WSL.
-5. Creates or updates the notebook workspace while preserving existing user project data.
-
-**First-time Ubuntu setup:** Windows may request administrator approval, a restart, or the creation of a Linux username and password. Complete these prompts when requested. If installation is interrupted by a restart, rerun the same installer.
-
-By default, **ASP 3.3.0** is installed, matching the reference version used in the associated study.
-
-##### Alternative: first-time installation helper
-
-This helper simply launches the same automatic Windows installer. It is optional because the standard installer already handles computers without Conda, Micromamba, Git or system Python. Existing working environments are not deleted.
-
-Open Windows PowerShell:
-
-```powershell
-Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows_first_time.ps1" `
-  -OutFile "$HOME\Downloads\install_windows_first_time.ps1"
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows_first_time.ps1"
-```
-
-Internet access is required. Installing WSL/Ubuntu may require administrator approval and a reboot. Miniforge, Anaconda, Git and an existing system Python are **not required**. The recommended entry point on every Windows computer is `install_windows.ps1`.
-
-##### Update an existing installation
-
-To update the workflow, download the latest installer and run it again:
-
-```powershell
-Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" `
-  -OutFile "$HOME\Downloads\install_windows.ps1"
-
-powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows.ps1"
-```
-
-The installer refreshes the Python package and package-managed notebook files together while preserving user project data. Close any running JupyterLab sessions before updating.
-
-**Windows / Conda troubleshooting:** If a previous installer failed at `Verify environment Python (>=3.10)` with `SyntaxError: '(' was never closed` or `print(WASA-DEM`, that was an installer quoting issue, **not a missing Python installation**. Download the current `install_windows.ps1` again and rerun it. The verification now executes temporary Python script files instead of `python -c` through `conda run`, and it retains the existing `pleiades_asp` environment. If a desktop shortcut was already created, it can remain in place.
-
-##### Optional: Select another ASP version
-
-To request another ASP version, define it before running the installer. For example:
-
-```powershell
-$env:PLEIADES_ASP_VERSION = "3.4.0"
-powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows.ps1"
-```
-
-For reproducibility of the workflow described in the associated study, **ASP 3.3.0 is recommended**. Compatibility with other versions should be verified.
-
-> **Windows execution:** The interactive JupyterLab interface runs in the Windows Python environment, while NASA Ames Stereo Pipeline commands execute through the managed WSL Linux distribution. Users do not need to configure Linux ASP paths manually.
-
----
-
-### 3. Launch the workflow
-
-#### Windows desktop shortcut (recommended)
-
-After a successful Windows installation or update, the installer creates a **WASA-DEM** shortcut on your Windows Desktop. Double-click it to open JupyterLab with the existing `pleiades_asp` environment and workflow notebook; the shortcut uses the detected Micromamba, Mamba, or Conda executable. It does not start a second ASP installation.
-
-**Already installed WASA-DEM?** Create the shortcut without reinstalling the package or ASP. Open Windows PowerShell and run:
-
-```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/create_wasa_dem_shortcut.ps1" -OutFile "$HOME\Downloads\create_wasa_dem_shortcut.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Downloads\create_wasa_dem_shortcut.ps1"
-```
-
-This places `WASA-DEM.lnk` on your actual Windows Desktop (including OneDrive-redirected desktops). It also creates `Launch_WASA-DEM.ps1` and `wasa_dem_launcher.json` beside your existing notebook. No project data, notebook names, environments, or outputs are renamed. To configure a nonstandard workspace, pass `-Workspace "C:\path\to\your\workspace"` to the shortcut setup script.
-
-**Official WASA-DEM desktop icon (automatic):** The branded satellite-and-mountain icon is included in the repository at [`assets/WASA-DEM.ico`](assets/WASA-DEM.ico). **No separate icon download or manual setup is required.** On every Windows installation or update, the installer copies the latest bundled icon into the workspace and configures the desktop shortcut automatically. Running `create_wasa_dem_shortcut.ps1` by itself downloads the same icon directly from GitHub if the asset is not beside the script. The shortcut uses a content-versioned icon path to avoid the Windows Explorer icon cache showing an older design. To intentionally override the official icon, pass `-IconPath "C:\path\to\custom.ico"`. None of this changes ASP, Python, or project data.
-
-If the shortcut cannot be created (for example because Windows blocks shell shortcuts), the existing manual launch commands below still work.
-
-
-The initialized notebook workspace is created automatically in the user's home directory (the legacy folder name is intentionally retained for compatibility):
-
-```text
-Pleiades_ASP_Workflow/
-```
-
-#### Linux
-
-With the `pleiades_asp` environment activated, launch JupyterLab:
-
-```bash
-jupyter lab "$HOME/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb"
-```
-
-#### Windows
-
-After installation, open **Windows PowerShell**. There is no need to manually activate the Python environment.
-
-Use the command corresponding to your installed environment manager.
-
-**Micromamba:**
-
-```powershell
-micromamba run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_Workflow.ipynb"
-```
-
-**Conda (Miniforge, Miniconda, or Anaconda):**
+**Windows:** double-click the **WASA-DEM** desktop shortcut. The installer automatically supplies the GitHub-hosted application icon. To start manually from PowerShell using Conda:
 
 ```powershell
 conda run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_Workflow.ipynb"
 ```
 
-**Mamba:**
+For Micromamba/Mamba, substitute the corresponding manager command.
 
-```powershell
-mamba run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_Workflow.ipynb"
+**Linux:** with the `pleiades_asp` environment active:
+
+```bash
+jupyter lab "$HOME/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb"
 ```
 
-Once JupyterLab opens, click:
+In JupyterLab, open `Pleiades_ASP_Workflow.ipynb` and click **▶ Start WASA-DEM**. The default `Pleiades_ASP_Workflow/` folder and Python package name remain unchanged for compatibility.
 
-```text
-▶ Start WASA-DEM
+### Verify the installation
+
+Run these **inside the `pleiades_asp` environment** (for example after `conda activate pleiades_asp` or `micromamba activate pleiades_asp`):
+
+```bash
+python --version
+pleiades-workflow-info
+asp-version
+asp-doctor
 ```
 
-The interactive workflow interface will initialize, providing access to data preparation, metadata and geometry analysis, ASP processing, DSM generation, and optional co-registration.
+A functional launch of the Jupyter interface and a successful ASP environment check are stronger evidence than the presence of a desktop shortcut alone. If a verification command fails, keep the error log and troubleshoot it before running processing jobs.
 
 ---
 
