@@ -39,6 +39,10 @@ def command_executable(command: str) -> tuple[str, str]:
     This does not call set_asp_version(), so bundle_adjust/stereo/point2dem
     keep the user's existing ASP release and science defaults intact.
     """
+    # Keep all existing core ASP commands on their previously validated
+    # install_asp() pathway. Only LAZ utilities use a separate companion.
+    if command not in {"point2las", "asp-pdal"}:
+        return install_asp(), command
     version = asp_version_for_command(command)
     binary = "pdal" if command == "asp-pdal" else command
     if not _tool_exists(binary, version):
