@@ -15,7 +15,18 @@ function Resolve-ManagerExecutable {
         (Join-Path $HOME 'micromamba\micromamba.exe'),
         (Join-Path $HOME 'micromamba\Library\bin\micromamba.exe')
     )
-    foreach ($candidate in @('micromamba.exe', 'mamba.exe', 'mamba.bat', 'conda.exe', 'conda.bat')) {
+    # Prefer the same Micromamba executable as the normal installer, even if
+    # a different Conda installation also appears on PATH.
+    $micromambaCommand = Get-Command 'micromamba.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($micromambaCommand -and (Test-Path -LiteralPath $micromambaCommand.Source -PathType Leaf)) {
+        return @{ Name = 'micromamba'; Exe = $micromambaCommand.Source }
+    }
+    foreach ($candidate in $known) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return @{ Name = 'micromamba'; Exe = $candidate }
+        }
+    }
+    foreach ($candidate in @('mamba.exe', 'mamba.bat', 'conda.exe', 'conda.bat')) {
         $cmd = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($cmd -and (Test-Path -LiteralPath $cmd.Source -PathType Leaf)) {
             return @{ Name = ($candidate -replace '\.(exe|bat)$', ''); Exe = $cmd.Source }
@@ -55,18 +66,28 @@ if (-not (Test-Path -LiteralPath $ManagerExecutable -PathType Leaf)) {
 }
 $ManagerExecutable = [IO.Path]::GetFullPath($ManagerExecutable)
 
+# First-time installs may set MAMBA_ROOT_PREFIX only in the installer process.
+# Recover it when the shortcut is configured later in a new PowerShell session.
+if ($ManagerName -eq 'micromamba' -and -not $env:MAMBA_ROOT_PREFIX) {
+    foreach ($root in @((Join-Path $HOME 'micromamba'), (Join-Path $env:LOCALAPPDATA 'micromamba'))) {
+        if (Test-Path -LiteralPath (Join-Path $root "envs\$EnvironmentName") -PathType Container) {
+            $env:MAMBA_ROOT_PREFIX = $root
+            break
+        }
+    }
+}
 $envList = & $ManagerExecutable env list --json
 if ($LASTEXITCODE -ne 0) { throw "Could not inspect environments using $ManagerExecutable." }
 $envInfo = ($envList | Out-String) | ConvertFrom-Json
-$matches = @($envInfo.envs | Where-Object { (Split-Path -Path $_ -Leaf) -eq $EnvironmentName })
-if ($matches.Count -eq 0) {
+$environmentMatches = @($envInfo.envs | Where-Object { (Split-Path -Path $_ -Leaf) -eq $EnvironmentName })
+if ($environmentMatches.Count -eq 0) {
     throw "The $EnvironmentName environment was not found. Run install_windows.ps1 first."
 }
 
 # Explicit Micromamba root makes new desktop-launched PowerShell sessions reliable.
 $mambaRoot = ''
 if ($ManagerName -eq 'micromamba') {
-    $environmentPath = [string]$matches[0]
+    $environmentPath = [string]$environmentMatches[0]
     $parent = Split-Path -Path $environmentPath -Parent
     if ((Split-Path -Path $parent -Leaf) -eq 'envs') {
         $mambaRoot = Split-Path -Path $parent -Parent
