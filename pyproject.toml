@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pleiades-asp-workflow"
 version = "1.5.4"
-description = "Notebook-first Pléiades/Pléiades Neo/SPOT DSM workflow with integrated reference-DEM preparation and cross-platform NASA Ames Stereo Pipeline runner."
+description = "WASA-DEM: notebook-based optical satellite stereo and tri-stereo workflow for 3D reconstruction and DSM generation using NASA Ames Stereo Pipeline."
 readme = "README.md"
 requires-python = ">=3.10"
 
@@ -16,6 +16,10 @@ authors = [
 license = "CECILL-B"
 
 keywords = [
+    "WASA-DEM",
+    "optical satellite stereo",
+    "digital elevation model",
+    "3D reconstruction",
     "Ames Stereo Pipeline",
     "ASP",
     "Pleiades",

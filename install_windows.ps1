@@ -1,4 +1,4 @@
-# Pléiades ASP Workflow - Windows installer and updater
+# WASA-DEM - Windows installer and updater
 # Run: powershell -ExecutionPolicy Bypass -File .\install_windows.ps1
 # Requires an existing micromamba, mamba, or conda installation.
 # Never deletes existing WSL distributions, Conda environments, or user projects.
@@ -77,13 +77,13 @@ function Find-UsableWslDistro {
     return $null
 }
 
-Write-Host '=== Pleiades ASP Workflow: Install / Update ==='
+Write-Host '=== WASA-DEM: Install / Update ==='
 $Manager = Find-EnvironmentManager
 Write-Host "Environment manager: $($Manager.Name)"
 Write-Host "Executable: $($Manager.Exe)"
 
 # 1. Create a separate environment, if needed.
-Write-Host '[1/6] Checking dedicated Python environment...'
+Write-Host '[1/7] Checking dedicated Python environment...'
 $environmentList = & $Manager.Exe env list --json
 Assert-ExitCode 'Query environments'
 $environmentInfo = ($environmentList | Out-String) | ConvertFrom-Json
@@ -97,7 +97,7 @@ if (-not $environmentExists) {
 }
 
 # 2. Download the repository once, ensuring notebook and Python package match.
-Write-Host '[2/6] Downloading GitHub main branch (Git is not required)...'
+Write-Host '[2/7] Downloading GitHub main branch (Git is not required)...'
 # Prefer a short build path: Windows wheel builds can exceed legacy MAX_PATH
 # when temporary directories and package-data notebook paths are nested.
 # Fall back to a user-writable directory if the drive root is restricted.
@@ -132,11 +132,11 @@ try {
     $env:TMP = $tempRoot
 
     # 3. Install/update from this same downloaded revision.
-    Write-Host '[3/6] Installing workflow and Jupyter...'
+    Write-Host '[3/7] Installing workflow and Jupyter...'
     Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'python', '-m', 'pip', 'install', '--upgrade', '--force-reinstall', '--no-cache-dir', $repoRoot) 'Install Python package'
 
     # 4. Install/initialize a Linux distro if none is available.
-    Write-Host '[4/6] Checking WSL...'
+    Write-Host '[4/7] Checking WSL...'
     $distro = Find-UsableWslDistro
     if (-not $distro) {
         if (-not (Get-Command wsl.exe -CommandType Application -ErrorAction SilentlyContinue)) {
@@ -164,11 +164,11 @@ try {
     Assert-ExitCode 'Initialize WSL'
 
     # 5. Install or verify the managed Linux ASP distribution.
-    Write-Host "[5/6] Installing/verifying ASP $AspVersion in $distro..."
+    Write-Host "[5/7] Installing/verifying ASP $AspVersion in $distro..."
     Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'asp-install', $AspVersion) 'Install ASP'
 
     # 6. Refresh only package-managed workspace resources.
-    Write-Host '[6/6] Refreshing notebook and workspace...'
+    Write-Host '[6/7] Refreshing notebook and workspace...'
     Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'pleiades-workflow-init') 'Initialize workspace'
 
     $notebook = Join-Path $Workspace 'Pleiades_ASP_Workflow.ipynb'
@@ -181,13 +181,22 @@ try {
     }
     Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'python', '-c', "from pleiades_asp_workflow.interface_bundle import asp_utils2; from pleiades_asp_runner.staging import stage_stereo_command; print('Interface:', asp_utils2.__file__)") 'Verify interface and staging imports'
 
+    # Add the desktop shortcut without changing existing Python/ASP installations.
+    Write-Host '[7/7] Creating/updating WASA-DEM desktop shortcut...'
+    try {
+        & (Join-Path $repoRoot 'create_wasa_dem_shortcut.ps1') -Workspace $Workspace -ManagerExecutable $Manager.Exe -ManagerName $Manager.Name -EnvironmentName $EnvironmentName
+    } catch {
+        Write-Warning ("WASA-DEM desktop shortcut could not be created: " + $_.Exception.Message)
+        Write-Warning "The workflow is installed and can still be launched manually."
+    }
+
     Write-Host ''
     Write-Host 'Installation/update completed.' -ForegroundColor Green
     Write-Host "Environment manager: $($Manager.Name)"
     Write-Host "Environment: $EnvironmentName"
     Write-Host "WSL distribution: $distro"
     Write-Host "Notebook: $notebook"
-    Write-Host 'Launch the workflow using:'
+    Write-Host 'Launch WASA-DEM from your Windows Desktop shortcut, or use:'
     Write-Host ('  & "{0}" run -n {1} jupyter lab "{2}"' -f $Manager.Exe, $EnvironmentName, $notebook)
 } finally {
     $env:TEMP = $oldTemp

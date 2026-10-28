@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — WASA-DEM branding and Windows desktop launcher
+
+- Adopted **WASA-DEM** (Workflow for Ames-based Satellite Analysis and Digital Elevation Model Generation) as the visible software and notebook-interface name.
+- Added a self-contained Windows desktop-shortcut setup script, runnable independently on existing installations; the Windows installer invokes it automatically after initialization.
+- Desktop shortcut launches the existing JupyterLab notebook using the detected Micromamba, Mamba, or Conda environment; no ASP reinstall is required to add the shortcut to an existing installation.
+- Retained the historical Python package, workspace and notebook paths, CLI names, processing logic, existing v1.5.4 identifier, and archived research-software citation for backward compatibility.
+
+
 ## 1.5.4 — Publication metadata and documentation preparation
 
 - Kept the top-level `LICENSE` intentionally empty while the project license is being selected.

@@ -1,7 +1,7 @@
 
 """
 asp_utils2.py
-Development interface for the first stages of the Pléiades ASP workflow.
+WASA-DEM interface for optical satellite stereo reconstruction and DSM generation.
 
 Version 1.5.4
 - conditional DIMAP tile validation with mandatory R1C1 anchor for merged products
