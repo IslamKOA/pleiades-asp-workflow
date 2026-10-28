@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — Official Windows desktop icon bundled on GitHub
+
+- Added the official branded satellite-and-mountain WASA-DEM Windows icon to `assets/WASA-DEM.ico` in the GitHub repository.
+- Windows installation and update automatically apply the bundled icon when refreshing the WASA-DEM desktop shortcut, without requiring any manual icon download.
+- Running the shortcut creator independently downloads the official icon from GitHub if it is not available beside the script, with a local fallback for offline use.
+- Shortcut icon references use content-hashed filenames so Windows Explorer recognizes new artwork after future software updates.
+- Added an icon format and launcher integration regression check; ASP processing and project data are unchanged.
+
+
 ## Unreleased — Windows Conda Python validation hotfix
 
 - Fixed the Windows installer failing with `SyntaxError: '(' was never closed` when Conda stripped quotes from the inline `python -c` verification argument.
