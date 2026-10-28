@@ -45,3 +45,29 @@ def test_backward_compatible_names_remain_stable():
     metadata = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'name = "pleiades-asp-workflow"' in metadata
     assert 'version = "1.5.4"' in metadata
+
+
+def test_official_icon_is_bundled_and_installed_automatically():
+    import struct
+
+    icon_file = ROOT / "assets" / "WASA-DEM.ico"
+    content = icon_file.read_bytes()
+    assert len(content) > 1024
+    reserved, image_type, image_count = struct.unpack("<HHH", content[:6])
+    assert (reserved, image_type) == (0, 1)
+    assert image_count >= 1
+
+    creator = (ROOT / "create_wasa_dem_shortcut.ps1").read_text(encoding="utf-8")
+    for marker in (
+        "assets\\WASA-DEM.ico",
+        "raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/assets/WASA-DEM.ico",
+        "Invoke-WebRequest -Uri $iconUrl",
+        "Get-FileHash -LiteralPath $sourceIcon",
+        "$shortcut.IconLocation",
+        "$shortcut.Save()",
+        "SHChangeNotify",
+    ):
+        assert marker in creator
+
+    installer = (ROOT / "install_windows.ps1").read_text(encoding="utf-8")
+    assert "create_wasa_dem_shortcut.ps1" in installer
