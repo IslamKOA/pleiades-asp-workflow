@@ -159,7 +159,10 @@ $shortcut.WindowStyle = 1
 # necessary and the main Python/ASP installation is never changed here.
 # A standalone shortcut script fetches the same GitHub-hosted .ico file.
 $repoIcon = Join-Path $PSScriptRoot 'assets\WASA-DEM.ico'
-$iconUrl = 'https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/assets/WASA-DEM.ico'
+$iconUrls = @(
+    'https://raw.githubusercontent.com/IslamKOA/wasa-dem/main/assets/WASA-DEM.ico',
+    'https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/assets/WASA-DEM.ico'
+)
 $canonicalIcon = Join-Path $Workspace 'WASA-DEM.ico'
 $temporaryIcon = ''
 $sourceIcon = ''
@@ -176,16 +179,22 @@ try {
         # When users download only this script, obtain the newest icon from
         # the same GitHub repository. Preserve the cached icon if offline.
         $temporaryIcon = Join-Path $env:TEMP ('wasa-dem-logo-' + [Guid]::NewGuid().ToString('N') + '.ico')
-        try {
-            Invoke-WebRequest -Uri $iconUrl -OutFile $temporaryIcon -UseBasicParsing -ErrorAction Stop
-            $sourceIcon = $temporaryIcon
-            Write-Host 'Downloaded the latest official WASA-DEM icon from GitHub.' -ForegroundColor Green
-        } catch {
+        foreach ($url in $iconUrls) {
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $temporaryIcon -UseBasicParsing -ErrorAction Stop
+                $sourceIcon = $temporaryIcon
+                Write-Host 'Downloaded the latest official WASA-DEM icon from GitHub.' -ForegroundColor Green
+                break
+            } catch {
+                # Support both old and newly renamed repository addresses.
+            }
+        }
+        if (-not $sourceIcon) {
             if (Test-Path -LiteralPath $canonicalIcon -PathType Leaf) {
                 $sourceIcon = $canonicalIcon
                 Write-Warning 'Icon download failed; reusing the existing cached icon.'
             } else {
-                throw ("Official WASA-DEM icon could not be downloaded: " + $_.Exception.Message)
+                throw 'Official WASA-DEM icon could not be downloaded from either repository address.'
             }
         }
     }
