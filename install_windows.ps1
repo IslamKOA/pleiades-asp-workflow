@@ -187,11 +187,11 @@ if (-not $environmentExists) {
 # strip embedded quotes and produce invalid Python even with a valid env.
 # Run a temporary Python file instead, without relying on system python.exe.
 $pythonCheck = Join-Path $env:TEMP ('wasa-dem-python-check-' + [Guid]::NewGuid().ToString('N') + '.py')
-@'
-import sys
-print("WASA-DEM Python:", sys.executable, sys.version)
-assert sys.version_info >= (3, 10), "WASA-DEM requires Python >= 3.10"
-'@ | Set-Content -LiteralPath $pythonCheck -Encoding UTF8
+@(
+    'import sys'
+    'print("WASA-DEM Python:", sys.executable, sys.version)'
+    'assert sys.version_info >= (3, 10), "WASA-DEM requires Python >= 3.10"'
+) | Set-Content -LiteralPath $pythonCheck -Encoding UTF8
 try {
     Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'python', $pythonCheck) 'Verify environment Python (>=3.10)'
 } finally {
@@ -284,11 +284,11 @@ try {
     # Use a Python script file here as well; no nested quotes are passed
     # through Windows PowerShell -> Conda run -> Python.
     $importCheck = Join-Path $tempRoot 'verify_wasa_dem_imports.py'
-    @'
-from pleiades_asp_workflow.interface_bundle import asp_utils2
-from pleiades_asp_runner.staging import stage_stereo_command
-print("WASA-DEM interface:", asp_utils2.__file__)
-'@ | Set-Content -LiteralPath $importCheck -Encoding UTF8
+    @(
+        'from pleiades_asp_workflow.interface_bundle import asp_utils2'
+        'from pleiades_asp_runner.staging import stage_stereo_command'
+        'print("WASA-DEM interface:", asp_utils2.__file__)'
+    ) | Set-Content -LiteralPath $importCheck -Encoding UTF8
     Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'python', $importCheck) 'Verify interface and staging imports'
 
     # Add the desktop shortcut without changing existing Python/ASP installations.
