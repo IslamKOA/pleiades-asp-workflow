@@ -37,24 +37,19 @@ For reproducibility of the associated study, the reference processing version is
 
 ## Installation
 
-Python **3.10 or newer** is required; Python **3.11 is recommended**.
+WASA-DEM uses **Python 3.10+** (Python **3.11 recommended**) inside a dedicated environment. **No preinstalled system Python or Git is required:** the automatic Windows and Linux installers detect usable Conda/Mamba/Micromamba installations and install standalone Micromamba when none is available.
 
 ### 1. Prepare the Python environment
 
 #### Linux
 
-Create and activate a clean Conda environment:
-
-```bash
-conda create -n pleiades_asp python=3.11 pip -y
-conda activate pleiades_asp
-```
+The recommended **automatic installer** creates or reuses the isolated `pleiades_asp` environment even when no system Python, Conda, or Git is installed. It uses a GitHub ZIP archive rather than `git clone`. It requires Bash, tar, internet access and either `curl` or `wget`.
 
 **Next step:** [Continue to Linux installation →](#linux-1)
 
 #### Windows
 
-**No manual Python environment setup is required.** If Micromamba, Mamba, Miniforge, Miniconda, or Anaconda is already installed, the standard installer automatically detects and reuses it. **If none is installed, the first-time Windows installer automatically downloads lightweight Micromamba**, then creates the dedicated `pleiades_asp` Python 3.11 environment. **Next step:** [Continue to Windows installation options →](#windows-1).
+**No manual Python environment setup is required.** The standard Windows installer searches PATH, common installation directories and active Conda variables for working managers. It checks which manager owns the `pleiades_asp` environment before creating anything new. If none is usable, it installs standalone Micromamba and Python 3.11 in a dedicated environment. **Git is not required.** [Continue to Windows installation →](#windows-1).
 
 ---
 
@@ -62,38 +57,52 @@ conda activate pleiades_asp
 
 #### Linux
 
-##### From the downloaded / research archive
+##### Recommended: automatic installation (no Git or preinstalled Python)
 
-After extracting the archive, enter the package directory and run:
+Download and run the setup script in a Linux terminal:
 
 ```bash
-python -m pip install --upgrade .
+curl -fL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh -o install_linux.sh
+bash install_linux.sh
+```
+
+If `curl` is unavailable but `wget` exists, use:
+
+```bash
+wget -O install_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh
+bash install_linux.sh
+```
+
+The installer searches existing Conda/Mamba/Micromamba environments (including common installations outside `PATH`), selects a manager containing `pleiades_asp` where possible, or installs standalone Micromamba in your user account. It installs Python inside this environment, **not** globally. WASA-DEM is downloaded from a GitHub ZIP archive, so **Git is optional**.
+
+For a new installation it also installs ASP 3.3.0 and creates the notebook workspace. On restricted Linux servers, the ASP runtime may require missing shared libraries that need system-administrator support. Do not use `sudo` for the Python/Micromamba environment.
+
+##### Manual installation with an existing Python environment
+
+Activate a Python 3.10+ environment with pip and run:
+
+```bash
+python -m pip install --upgrade "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
 asp-install 3.3.0
 pleiades-workflow-init
 ```
 
-##### From the GitHub repository (first-time installation)
+This also works **without Git**. Alternatively, download and extract the source/archive, enter the extracted folder and run `python -m pip install --upgrade .`.
+
+##### Update an existing Linux installation (without Git)
+
+Activate the same environment, then run:
 
 ```bash
-python -m pip install --upgrade git+https://github.com/IslamKOA/pleiades-asp-workflow.git
-asp-install 3.3.0
+python -m pip install --upgrade --force-reinstall --no-deps "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
 pleiades-workflow-init
 ```
 
-##### Update an existing Linux installation
+The `--no-deps` option preserves your installed dependency versions. Use the automatic installer if dependencies, ASP or the Python environment are missing.
 
-Activate the Python environment in which WASA-DEM (formerly Pléiades ASP Workflow) is already installed, then run:
+**Important:** `pleiades-workflow-init` **overwrites package-managed notebooks**, including `Pleiades_ASP_Workflow.ipynb`, `coregistration/` and `point_density/`. Back up edits to these files before updating. Existing project data inside `data/` and unrelated user files are preserved. For a custom workspace use `pleiades-workflow-init /your/custom/workspace/path`.
 
-```bash
-python -m pip install --upgrade --force-reinstall --no-deps "git+https://github.com/IslamKOA/pleiades-asp-workflow.git@main"
-pleiades-workflow-init
-```
-
-`--force-reinstall` fetches and reinstalls the latest GitHub workflow code even if the package version number has not changed. `--no-deps` keeps the dependencies in your existing working environment untouched; for a first-time install or missing dependencies, use the full installation instructions above.
-
-**Important:** `pleiades-workflow-init` updates **and overwrites** the package-managed workspace files, including `Pleiades_ASP_Workflow.ipynb`, `coregistration/`, and `point_density/`, even if those files already exist. Back up any personal edits to package-managed notebooks before updating. Files in `data/` and unrelated user-created files are preserved. Use `pleiades-workflow-init /your/custom/workspace/path` if your workspace is not in the default `~/Pleiades_ASP_Workflow` folder.
-
-You do **not** need to rerun `asp-install 3.3.0` just to update the Python workflow or notebooks. Close running notebook kernels and reopen the interface after updating.
+You do **not** need to rerun `asp-install 3.3.0` just to refresh Python workflow code. Close running notebook kernels and reopen the interface after updating.
 
 ---
 
@@ -101,9 +110,9 @@ You do **not** need to rerun `asp-install 3.3.0` just to update the Python workf
 
 On Windows 10/11, an automated PowerShell installer prepares the Python environment, installs **WASA-DEM** and its dependencies, configures Windows Subsystem for Linux (WSL), installs NASA Ames Stereo Pipeline, and initializes the JupyterLab workspace.
 
-##### Option A — Existing Micromamba, Mamba, or Conda
+##### Recommended: automatic Windows installation
 
-Choose this option if you already have an environment manager. Open **Windows PowerShell**:
+Use the same installer whether Conda/Mamba/Micromamba is installed, not on PATH, or entirely absent. Open **Windows PowerShell**:
 
 ```powershell
 Invoke-WebRequest `
@@ -114,7 +123,7 @@ powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows.ps1"
 
 The installer automatically:
 
-1. Detects Micromamba, Mamba, or Conda and creates the `pleiades_asp` environment with Python 3.11 if it does not exist.
+1. Searches common directories and environment variables for working Micromamba, Mamba or Conda installations; reuses the existing `pleiades_asp` environment, or installs standalone Micromamba when necessary. Verifies the real Python interpreter inside the selected environment.
 2. Downloads and installs the latest workflow from GitHub, including the required Python libraries and JupyterLab.
 3. Detects an existing WSL Linux distribution or installs Ubuntu when necessary.
 4. Downloads, installs, and verifies the official NASA Ames Stereo Pipeline distribution within WSL.
@@ -124,21 +133,21 @@ The installer automatically:
 
 By default, **ASP 3.3.0** is installed, matching the reference version used in the associated study.
 
-##### Option B — New computer without Conda or Micromamba
+##### Alternative: first-time installation helper
 
-If you do not already have Micromamba, Mamba, Miniforge, Miniconda, or Anaconda, use the **optional first-time setup script**. It installs the lightweight standalone **Micromamba** for the current Windows user, then launches the standard installer above. Existing environments are not deleted.
+This helper simply launches the same automatic Windows installer. It is optional because the standard installer already handles computers without Conda, Micromamba, Git or system Python. Existing working environments are not deleted.
 
 Open Windows PowerShell:
 
 ```powershell
 Invoke-WebRequest `
   -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows_first_time.ps1" `
-  -OutFile "$HOME\\Downloads\\install_windows_first_time.ps1"
+  -OutFile "$HOME\Downloads\install_windows_first_time.ps1"
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$HOME\\Downloads\\install_windows_first_time.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$HOME\Downloads\install_windows_first_time.ps1"
 ```
 
-The first-time installer requires an internet connection and may request Windows permissions to install WSL/Ubuntu. Miniforge or a full Anaconda distribution is **not** required. The conventional `install_windows.ps1` remains the recommended option when an environment manager is already installed.
+Internet access is required. Installing WSL/Ubuntu may require administrator approval and a reboot. Miniforge, Anaconda, Git and an existing system Python are **not required**. The recommended entry point on every Windows computer is `install_windows.ps1`.
 
 ##### Update an existing installation
 
