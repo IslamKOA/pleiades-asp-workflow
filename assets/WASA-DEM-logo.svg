@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="WASA-DEM logo">
+<defs>
+<linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#061731"/><stop offset="1" stop-color="#06568f"/></linearGradient>
+<linearGradient id="h" x1="0" x2="1" y1="1" y2="0"><stop stop-color="#095ef5"/><stop offset=".27" stop-color="#03c4ed"/><stop offset=".56" stop-color="#3dea93"/><stop offset=".8" stop-color="#eadb34"/><stop offset="1" stop-color="#f15a22"/></linearGradient>
+<clipPath id="frame"><rect x="0" y="0" width="512" height="512" rx="86"/></clipPath>
+</defs>
+<g clip-path="url(#frame)">
+<rect width="512" height="512" fill="url(#bg)"/>
+<path d="M-8 365 65 319 121 345 199 258 242 289 308 222 357 286 420 243 520 339 520 512H-8Z" fill="#173b6a"/>
+<path d="M153 303 199 258 233 282 210 277 200 268 189 282Z M273 258 308 222 339 269 314 250 307 240 295 260Z" fill="#e6f4fc"/>
+<path d="M-5 442 91 400 162 430 230 358 292 402 349 323 408 380 472 343 520 408V512H-5Z" fill="url(#h)"/>
+<path d="M0 480Q130 422 190 461T345 436T512 457" fill="none" stroke="#063c7b" stroke-width="6" opacity=".7"/>
+<path d="M0 502Q145 441 200 487T355 450T512 486" fill="none" stroke="#003872" stroke-width="5" opacity=".7"/>
+<rect width="512" height="262" fill="#04142f" opacity=".92"/>
+<path d="M80 79Q246 -10 436 72" fill="none" stroke="#37cbfa" stroke-width="5"/>
+<g text-anchor="middle" font-family="Arial, Segoe UI, sans-serif" font-weight="900">
+<text x="256" y="143" font-size="106" fill="#ffffff" letter-spacing="-3">WASA-</text>
+<text x="256" y="258" font-size="139" fill="#55e8ec" letter-spacing="-2">DEM</text>
+</g>
+</g><rect x="2" y="2" width="508" height="508" rx="85" fill="none" stroke="#229cd5" stroke-width="4"/>
+</svg>
