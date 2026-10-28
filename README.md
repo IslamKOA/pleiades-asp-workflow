@@ -195,7 +195,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Downloads\create_wasa
 
 This places `WASA-DEM.lnk` on your actual Windows Desktop (including OneDrive-redirected desktops). It also creates `Launch_WASA-DEM.ps1` and `wasa_dem_launcher.json` beside your existing notebook. No project data, notebook names, environments, or outputs are renamed. To configure a nonstandard workspace, pass `-Workspace "C:\path\to\your\workspace"` to the shortcut setup script.
 
-**Custom WASA-DEM mountain icon:** Save the supplied `WASA-DEM.ico` in your Windows `Downloads` folder or your existing `Pleiades_ASP_Workflow` folder, then rerun `create_wasa_dem_shortcut.ps1`. It automatically finds the icon and assigns it to the desktop shortcut. You may also specify `-IconPath "C:\path\to\WASA-DEM.ico"`. This does not change processing, data, or environments.
+**Official WASA-DEM desktop icon (automatic):** The branded satellite-and-mountain icon is included in the repository at [`assets/WASA-DEM.ico`](assets/WASA-DEM.ico). **No separate icon download or manual setup is required.** On every Windows installation or update, the installer copies the latest bundled icon into the workspace and configures the desktop shortcut automatically. Running `create_wasa_dem_shortcut.ps1` by itself downloads the same icon directly from GitHub if the asset is not beside the script. The shortcut uses a content-versioned icon path to avoid the Windows Explorer icon cache showing an older design. To intentionally override the official icon, pass `-IconPath "C:\path\to\custom.ico"`. None of this changes ASP, Python, or project data.
 
 If the shortcut cannot be created (for example because Windows blocks shell shortcuts), the existing manual launch commands below still work.
 
