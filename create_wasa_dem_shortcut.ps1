@@ -3,7 +3,6 @@
 param(
     [string]$Workspace = (Join-Path $HOME 'Pleiades_ASP_Workflow'),
     [string]$ManagerExecutable = '',
-    [ValidateSet('', 'micromamba', 'mamba', 'conda')]
     [string]$ManagerName = '',
     [string]$EnvironmentName = 'pleiades_asp'
 )
