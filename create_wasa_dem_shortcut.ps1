@@ -4,7 +4,8 @@ param(
     [string]$Workspace = (Join-Path $HOME 'Pleiades_ASP_Workflow'),
     [string]$ManagerExecutable = '',
     [string]$ManagerName = '',
-    [string]$EnvironmentName = 'pleiades_asp'
+    [string]$EnvironmentName = 'pleiades_asp',
+    [string]$IconPath = ''
 )
 $ErrorActionPreference = 'Stop'
 
@@ -153,6 +154,25 @@ $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $launcherPa
 $shortcut.WorkingDirectory = $Workspace
 $shortcut.Description = 'WASA-DEM - optical satellite stereo DSM workflow'
 $shortcut.WindowStyle = 1
+# Optional user-supplied WASA-DEM mountain/DEM icon. It is intentionally
+# external to the executable so the application icon can be updated safely.
+if (-not $IconPath) {
+    foreach ($candidate in @(
+        (Join-Path $Workspace 'WASA-DEM.ico'),
+        (Join-Path $HOME 'Downloads\WASA-DEM.ico')
+    )) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $IconPath = $candidate
+            break
+        }
+    }
+}
+if ($IconPath) {
+    if (-not (Test-Path -LiteralPath $IconPath -PathType Leaf)) {
+        throw "Requested WASA-DEM icon not found: $IconPath"
+    }
+    $shortcut.IconLocation = ([IO.Path]::GetFullPath($IconPath) + ',0')
+}
 $shortcut.Save()
 
 Write-Host "Desktop shortcut ready: $shortcutPath" -ForegroundColor Green
