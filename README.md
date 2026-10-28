@@ -1,8 +1,12 @@
-# Pléiades ASP Workflow
+# WASA-DEM
 
-**Release v1.5.4**
+**Workflow for Ames-based Satellite Analysis and Digital Elevation Model Generation**
 
-A reproducible **Python- and Jupyter-based research-software workflow** for generating high-resolution digital surface models (DSMs) from **Pléiades, Pléiades NEO, and SPOT 6/7** optical stereo imagery using the **NASA Ames Stereo Pipeline (ASP)**.
+**Current software version: v1.5.4** · Formerly named *Pléiades ASP Workflow*
+
+**WASA-DEM** is a reproducible, open-source **Python- and Jupyter-based workflow** for optical satellite stereo and tri-stereo photogrammetry, 3D point-cloud reconstruction, and high-resolution **digital surface model (DSM)** generation using the **NASA Ames Stereo Pipeline (ASP)**. The current implementation supports **Pléiades, Pléiades NEO, and SPOT 6/7**.
+
+> **Compatibility:** This is a software *branding update only*. The GitHub repository address, Python package name (`pleiades-asp-workflow`), existing CLI commands, workspace/notebook names, processing methods, and version number remain unchanged. Published v1.5.4 software citations and its archived DOI retain their historical title.
 
 - The guided Jupyter interface supports the complete DSM-generation workflow, including image preparation, metadata and stereo-geometry inspection, reference-DEM preparation, ASP pre-processing and map projection, point-cloud reconstruction, final DSM generation, and optional LiDAR-based co-registration.
 
