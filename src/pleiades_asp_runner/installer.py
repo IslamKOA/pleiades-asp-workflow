@@ -955,7 +955,7 @@ def install_asp(
         asset_name, url = _target_asset(version)
 
         print("=" * 60)
-        print("Pléiades ASP Runner")
+        print("WASA-DEM ASP Runner")
         print("=" * 60)
         print(f"Package     : {PACKAGE_VERSION}")
         print(f"ASP version : {version}")
@@ -1144,7 +1144,7 @@ def info_cli() -> None:
     version = get_asp_version()
 
     print("=" * 60)
-    print("Pléiades ASP Runner")
+    print("WASA-DEM ASP Runner")
     print("=" * 60)
     print(f"Package version : {PACKAGE_VERSION}")
     print(f"ASP selected    : {version}")
@@ -1188,7 +1188,7 @@ def doctor_cli() -> None:
     version = get_asp_version()
 
     print("=" * 60)
-    print("Pléiades ASP Runner - diagnostics")
+    print("WASA-DEM ASP Runner - diagnostics")
     print("=" * 60)
     print(f"Package version : {PACKAGE_VERSION}")
     print(f"ASP selected    : {version}")

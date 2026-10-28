@@ -1,4 +1,4 @@
-# Pléiades ASP Workflow - first-time Windows setup (no Conda required)
+# WASA-DEM - first-time Windows setup (no Conda required)
 # Downloads standalone Micromamba for the current user, then runs the standard installer.
 # Does not change or remove any existing Python / Conda environments.
 $ErrorActionPreference = 'Stop'
@@ -58,11 +58,11 @@ if ((Test-Path -LiteralPath $micromambaExe -PathType Leaf) -and -not $env:MAMBA_
 
 $installer = Join-Path $env:TEMP ('asp-install-' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.ps1')
 try {
-    Write-Host 'Running the standard Pléiades ASP workflow installer...'
+    Write-Host 'Running the standard WASA-DEM installer...'
     Invoke-WebRequest -Uri $scriptUrl -OutFile $installer -UseBasicParsing
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
-    if ($LASTEXITCODE -ne 0) { throw "Pléiades ASP installation failed (exit code $LASTEXITCODE)." }
-    Write-Host 'Pléiades ASP Workflow setup completed.' -ForegroundColor Green
+    if ($LASTEXITCODE -ne 0) { throw "WASA-DEM installation failed (exit code $LASTEXITCODE)." }
+    Write-Host 'WASA-DEM setup completed.' -ForegroundColor Green
 } finally {
     Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
 }

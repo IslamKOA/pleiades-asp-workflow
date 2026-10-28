@@ -129,7 +129,7 @@ def initialize_workspace(
     developer: bool = False,
 ) -> Path:
     """
-    Create or update the Pléiades ASP Workflow workspace.
+    Create or update the WASA-DEM workspace.
 
     Normal behaviour
     ----------------
@@ -216,7 +216,7 @@ def init_cli() -> None:
     parser = argparse.ArgumentParser(
         prog="pleiades-workflow-init",
         description=(
-            "Create or update the Pléiades ASP Workflow workspace. "
+            "Create or update the WASA-DEM workspace. "
             "Package-managed workflow files are refreshed automatically "
             "while existing user data are preserved."
         ),
@@ -293,7 +293,7 @@ def init_cli() -> None:
     if workspace_existed:
 
         print(
-            f"Pléiades ASP Workflow {__version__} "
+            f"WASA-DEM {__version__} "
             "workspace updated:"
         )
 
@@ -314,7 +314,7 @@ def init_cli() -> None:
     else:
 
         print(
-            f"Pléiades ASP Workflow {__version__} "
+            f"WASA-DEM {__version__} "
             "workspace created:"
         )
 
@@ -336,11 +336,11 @@ def init_cli() -> None:
 
 def info_cli() -> None:
     """
-    Display basic package/workspace information.
+    Display basic WASA-DEM package/workspace information.
     """
 
     print(
-        f"pleiades-asp-workflow {__version__}"
+        f"WASA-DEM {__version__} (package: pleiades-asp-workflow)"
     )
 
     print(

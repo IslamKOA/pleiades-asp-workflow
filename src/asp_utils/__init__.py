@@ -1,5 +1,5 @@
 """
-Pléiades ASP scientific workflow utilities.
+WASA-DEM scientific workflow utilities.
 
 Import directly with::
 

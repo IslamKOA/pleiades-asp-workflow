@@ -6,7 +6,7 @@
 
 **WASA-DEM** is a reproducible, open-source **Python- and Jupyter-based workflow** for optical satellite stereo and tri-stereo photogrammetry, 3D point-cloud reconstruction, and high-resolution **digital surface model (DSM)** generation using the **NASA Ames Stereo Pipeline (ASP)**. The current implementation supports **Pléiades, Pléiades NEO, and SPOT 6/7**.
 
-> **Compatibility:** This is a software *branding update only*. The GitHub repository address, Python package name (`pleiades-asp-workflow`), existing CLI commands, workspace/notebook names, processing methods, and version number remain unchanged. Published v1.5.4 software citations and its archived DOI retain their historical title.
+> **Backward compatibility:** The WASA-DEM identity and optional Windows desktop launcher do not change the Python distribution (`pleiades-asp-workflow`), GitHub URL, existing CLI commands, default workspace/notebook paths, ASP processing methods, or v1.5.4 version identifier. The previously archived research software (DOI below) remains cited under its original publication title.
 
 - The guided Jupyter interface supports the complete DSM-generation workflow, including image preparation, metadata and stereo-geometry inspection, reference-DEM preparation, ASP pre-processing and map projection, point-cloud reconstruction, final DSM generation, and optional LiDAR-based co-registration.
 
@@ -58,7 +58,7 @@ conda activate pleiades_asp
 
 ---
 
-### 2. Install Pléiades ASP Workflow
+### 2. Install WASA-DEM
 
 #### Linux
 
@@ -82,7 +82,7 @@ pleiades-workflow-init
 
 ##### Update an existing Linux installation
 
-Activate the Python environment in which Pléiades ASP Workflow is already installed, then run:
+Activate the Python environment in which WASA-DEM (formerly Pléiades ASP Workflow) is already installed, then run:
 
 ```bash
 python -m pip install --upgrade --force-reinstall --no-deps "git+https://github.com/IslamKOA/pleiades-asp-workflow.git@main"
@@ -99,7 +99,7 @@ You do **not** need to rerun `asp-install 3.3.0` just to update the Python workf
 
 #### Windows
 
-On Windows 10/11, an automated PowerShell installer prepares the Python environment, installs **Pléiades ASP Workflow** and its dependencies, configures Windows Subsystem for Linux (WSL), installs NASA Ames Stereo Pipeline, and initializes the JupyterLab workspace.
+On Windows 10/11, an automated PowerShell installer prepares the Python environment, installs **WASA-DEM** and its dependencies, configures Windows Subsystem for Linux (WSL), installs NASA Ames Stereo Pipeline, and initializes the JupyterLab workspace.
 
 ##### Option A — Existing Micromamba, Mamba, or Conda
 
@@ -171,7 +171,23 @@ For reproducibility of the workflow described in the associated study, **ASP 3.3
 
 ### 3. Launch the workflow
 
-The initialized notebook workspace is created automatically in the user's home directory:
+#### Windows desktop shortcut (recommended)
+
+After a successful Windows installation or update, the installer creates a **WASA-DEM** shortcut on your Windows Desktop. Double-click it to open JupyterLab with the existing `pleiades_asp` environment and workflow notebook; the shortcut uses the detected Micromamba, Mamba, or Conda executable. It does not start a second ASP installation.
+
+**Already installed WASA-DEM?** Create the shortcut without reinstalling the package or ASP. Open Windows PowerShell and run:
+
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/create_wasa_dem_shortcut.ps1" -OutFile "$HOME\Downloads\create_wasa_dem_shortcut.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Downloads\create_wasa_dem_shortcut.ps1"
+```
+
+This places `WASA-DEM.lnk` on your actual Windows Desktop (including OneDrive-redirected desktops). It also creates `Launch_WASA-DEM.ps1` and `wasa_dem_launcher.json` beside your existing notebook. No project data, notebook names, environments, or outputs are renamed. To configure a nonstandard workspace, pass `-Workspace "C:\path\to\your\workspace"` to the shortcut setup script.
+
+If the shortcut cannot be created (for example because Windows blocks shell shortcuts), the existing manual launch commands below still work.
+
+
+The initialized notebook workspace is created automatically in the user's home directory (the legacy folder name is intentionally retained for compatibility):
 
 ```text
 Pleiades_ASP_Workflow/
@@ -212,7 +228,7 @@ mamba run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_
 Once JupyterLab opens, click:
 
 ```text
-▶ Start Pléiades ASP Workflow
+▶ Start WASA-DEM
 ```
 
 The interactive workflow interface will initialize, providing access to data preparation, metadata and geometry analysis, ASP processing, DSM generation, and optional co-registration.
@@ -511,6 +527,8 @@ ASP is a separate dependency developed at NASA Ames Research Center and distribu
 See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for attribution and redistribution notes relevant to ASP and other external components.
 
 ## Citation
+
+**WASA-DEM** is the current software name. The DOI below identifies the original archived **Pléiades ASP Workflow v1.5.4** and should retain its published title when cited.
 
 ### Associated manuscript
 
