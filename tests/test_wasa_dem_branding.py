@@ -71,3 +71,16 @@ def test_official_icon_is_bundled_and_installed_automatically():
 
     installer = (ROOT / "install_windows.ps1").read_text(encoding="utf-8")
     assert "create_wasa_dem_shortcut.ps1" in installer
+
+
+def test_github_brand_assets_and_readme_links():
+    import struct
+    icon = (ROOT / "assets" / "WASA-DEM.ico").read_bytes()
+    assert icon[:4] == bytes((0,0,1,0))
+    assert struct.unpack("<H", icon[4:6])[0] >= 1
+    banner = (ROOT / "assets" / "WASA-DEM-GitHub-banner.svg").read_text(encoding="utf-8")
+    logo = (ROOT / "assets" / "WASA-DEM-logo.svg").read_text(encoding="utf-8")
+    assert "WASA-" in banner and "Digital Elevation Model Generation" in banner
+    assert "WASA-" in logo and "DEM" in logo
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "![WASA-DEM satellite stereo and digital elevation model software banner](assets/WASA-DEM-GitHub-banner.svg)" in readme

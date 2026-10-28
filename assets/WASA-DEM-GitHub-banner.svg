@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="500" viewBox="0 0 1280 500" role="img" aria-label="WASA-DEM — Workflow for Ames-based Satellite Analysis and Digital Elevation Model Generation">
+  <defs>
+    <linearGradient id="night" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#03132d"/><stop offset=".7" stop-color="#064779"/><stop offset="1" stop-color="#0a7da4"/></linearGradient>
+    <linearGradient id="terra" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#0751ff"/><stop offset=".25" stop-color="#08ccef"/><stop offset=".50" stop-color="#36ea85"/><stop offset=".72" stop-color="#f3e433"/><stop offset="1" stop-color="#ff6226"/></linearGradient>
+    <linearGradient id="name" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#27bafc"/><stop offset=".62" stop-color="#4decc5"/><stop offset="1" stop-color="#97f26b"/></linearGradient>
+    <linearGradient id="fade" x1="0" x2="1"><stop offset="0" stop-color="#03142f"/><stop offset=".70" stop-color="#03142f" stop-opacity=".96"/><stop offset="1" stop-color="#03142f" stop-opacity="0"/></linearGradient>
+    <clipPath id="frame"><rect x="2" y="2" width="1276" height="496" rx="30"/></clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="500" fill="url(#night)"/>
+    <g opacity=".30" stroke="#4ac8f5" fill="none">
+      <path d="M680 10 Q980 55 1290 170"/><path d="M680 70 Q1030 110 1290 215"/><path d="M655 120 Q1045 145 1290 260"/>
+    </g>
+    <!-- Bare-rock alpine ridge in the background -->
+    <path d="M615 360 680 280 730 303 798 168 843 233 916 76 977 195 1049 152 1132 285 1188 231 1279 340 1280 500 615 500Z" fill="#193e66"/>
+    <path d="M615 360 680 280 730 303 798 168 843 233 916 76 977 195 1049 152 1132 285 1188 231 1279 340" stroke="#82a8d4" stroke-width="4" fill="none"/>
+    <path d="M767 221 798 168 826 213 809 211 796 189 784 216Z M877 136 916 76 962 168 932 139 918 116 905 138Z M1015 185 1049 152 1088 208 1059 189Z" fill="#e5f4fd"/>
+    <path d="M625 474 701 416 736 429 842 306 903 360 989 238 1048 320 1114 255 1197 358 1278 340 1280 500 620 500Z" fill="#052f61"/>
+    <!-- Color-relief terrain / DSM -->
+    <path d="M666 500 730 454 815 438 880 375 938 395 988 300 1015 355 1082 315 1152 398 1202 361 1280 420 1280 500Z" fill="url(#terra)"/>
+    <path d="M730 454 815 438 880 375 938 395 988 300 1015 355 1082 315 1152 398" stroke="#b8fbef" opacity=".7" fill="none" stroke-width="3"/>
+    <path d="M720 481 Q795 458 847 446 T980 386 T1130 412 T1280 455" fill="none" stroke="#073a71" opacity=".65" stroke-width="3"/>
+    <path d="M739 495 Q836 460 881 442 T1030 385 T1280 472" fill="none" stroke="#0e4a84" opacity=".6" stroke-width="3"/>
+    <path d="M780 500 Q877 457 922 442 T1090 416 T1280 488" fill="none" stroke="#083766" opacity=".75" stroke-width="3"/>
+    <rect width="780" height="500" fill="url(#fade)"/>
+    <!-- Small satellite and sweeping acquisition arc -->
+    <g transform="translate(83 58) rotate(-18)">
+      <rect x="30" y="20" width="43" height="31" rx="5" fill="#e1effb"/>
+      <rect x="-30" y="22" width="56" height="27" fill="#0878ce" stroke="#a6ddfd" stroke-width="2"/>
+      <rect x="79" y="22" width="56" height="27" fill="#0878ce" stroke="#a6ddfd" stroke-width="2"/>
+      <path d="M-2 22v27 M11 22v27 M93 22v27 M106 22v27 M-30 35h56 M79 35h56" stroke="#80d8fa" stroke-width="2"/>
+      <circle cx="51" cy="36" r="5" fill="#20c3f8"/>
+    </g>
+    <path d="M91 141 Q255 -18 428 80" stroke="#40c8f9" stroke-width="4" stroke-linecap="round" fill="none" opacity=".85"/>
+    <g font-family="Arial, Segoe UI, sans-serif">
+      <text x="56" y="248" font-size="105" font-weight="900" letter-spacing="-4" fill="#f8fbff">WASA-</text>
+      <text x="395" y="248" font-size="105" font-weight="900" letter-spacing="-4" fill="url(#name)">DEM</text>
+      <text x="58" y="321" font-size="30" font-weight="600" fill="#edf8ff">Workflow for Ames-based Satellite Analysis</text>
+      <text x="58" y="360" font-size="30" font-weight="600" fill="#edf8ff">and Digital Elevation Model Generation</text>
+      <text x="58" y="433" font-size="23" fill="#5ce0f8">Optical satellite stereo   •   3D reconstruction   •   DSM/DEM generation</text>
+    </g>
+  </g>
+  <rect x="2" y="2" width="1276" height="496" rx="30" stroke="#368fd0" stroke-width="3" fill="none"/>
+</svg>

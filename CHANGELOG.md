@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — Readable Windows icon and GitHub repository branding
+
+- Simplified the official `assets/WASA-DEM.ico` so the **WASA-DEM** name remains recognizable at small Windows desktop shortcut sizes; the color-relief mountain visual remains underneath the enlarged lettering.
+- Added vector GitHub banner `assets/WASA-DEM-GitHub-banner.svg` with the full scientific name, satellite geometry and topographic elevation visualization, and displayed it prominently in the README.
+- Added a square scalable brand mark `assets/WASA-DEM-logo.svg` for documentation and communications.
+- Retained the existing Windows installer and auto-icon-refresh mechanism; the next install/update retrieves this updated icon without extra manual steps.
+- No changes to ASP processing, Python dependencies, workspace paths, current package version, or the historical archived DOI.
+
+
 ## Unreleased — Official Windows desktop icon bundled on GitHub
 
 - Added the official branded satellite-and-mountain WASA-DEM Windows icon to `assets/WASA-DEM.ico` in the GitHub repository.
