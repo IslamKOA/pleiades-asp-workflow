@@ -21,11 +21,17 @@ Set these three values directly:
 - `MAX_VALID_TRIANGULATION_ERROR`: the point export filtering threshold
   in metres, e.g. `1.0`, matching your experimental configuration.
 
-If ASP is not available from the Jupyter kernel environment, set
-`ASP_BIN_DIR` to the bin folder of an **ASP 3.5.0 or later** installation,
-or use the `USE_MICROMAMBA` option. The notebook uses `point2las` with
-`--save-triangulation-error`, which is unavailable in ASP 3.3.
-Set `PDAL_BIN_DIR` only if PDAL is also outside the kernel's PATH.
+With the installed WASA-DEM package, leave `ASP_BIN_DIR=None`,
+`PDAL_BIN_DIR=None`, and `USE_MICROMAMBA=False` (default). The managed
+`point2las` wrapper selects **ASP 3.5.0 only for LAZ export** when the
+primary ASP version is 3.3.0 or 3.4.0, and downloads the separate ASP
+3.5.0 distribution on the first use. It never changes the active ASP version.
+
+The notebook tries the companion distribution's PDAL CLI via `asp-pdal`.
+If PDAL is unavailable in the distributed ASP binaries, provide your own
+PDAL installation using `PDAL_BIN_DIR` or `USE_MICROMAMBA`. As an
+advanced override, `ASP_BIN_DIR` can select an external ASP 3.5+ bin folder.
+The notebook's `--save-triangulation-error` option requires ASP 3.5+.
 
 `LAZ_OUTPUT_DIR_OVERRIDE=None` saves the exported LAZ files and CSV summaries
 in `<POINT_CLOUD_DIR>/laz`. Review the discovery preview before exporting.
