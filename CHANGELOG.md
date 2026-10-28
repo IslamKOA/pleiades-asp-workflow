@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — Robust Windows/Linux environment bootstrapping
+
+- Windows now checks available Conda, Mamba, and Micromamba managers in PATH, common installation directories, and environment-variable locations rather than assuming `python.exe` is globally accessible.
+- When multiple working managers are present, the Windows installer attempts to reuse the one already containing the `pleiades_asp` environment. It verifies Python inside that environment.
+- If no manager is usable, the Windows installer downloads the official standalone Micromamba distribution for the current user. The first-time Windows helper delegates to this same standard installer.
+- Added `install_linux.sh`: a Linux installer that detects existing managers/environments and bootstraps Micromamba and Python 3.11 if needed.
+- Linux installation and updates now support a GitHub ZIP archive without requiring Git; existing Windows ZIP-based installation is unchanged.
+- Added non-destructive installer contract checks and Linux Bash syntax validation.
+- The Python package name, existing environment/workspace names, user data, ASP version default, and archived software identifier remain unchanged.
+
+
 ## Unreleased — WASA-DEM branding and Windows desktop launcher
 
 - Adopted **WASA-DEM** (Workflow for Ames-based Satellite Analysis and Digital Elevation Model Generation) as the visible software and notebook-interface name.
