@@ -154,123 +154,50 @@ $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $launcherPa
 $shortcut.WorkingDirectory = $Workspace
 $shortcut.Description = 'WASA-DEM - optical satellite stereo DSM workflow'
 $shortcut.WindowStyle = 1
-# Use the user-approved artwork from the repository as the Windows shortcut
-# icon. Windows Shell needs ICO, so convert the JPG to a multi-resolution ICO
-# using only System.Drawing in Windows PowerShell (no Python/Pillow required).
-function Convert-WasaArtworkToIcon([string]$ImagePath, [string]$OutputPath) {
-    Add-Type -AssemblyName System.Drawing
-    $source = [System.Drawing.Image]::FromFile($ImagePath)
-    try {
-        $frames = New-Object System.Collections.ArrayList
-        foreach ($pixels in @(16, 24, 32, 48, 64, 128, 256)) {
-            $bitmap = New-Object System.Drawing.Bitmap -ArgumentList @($pixels, $pixels)
-            try {
-                $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-                try {
-                    $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-                    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-                    $graphics.DrawImage($source, 0, 0, $pixels, $pixels)
-                } finally {
-                    $graphics.Dispose()
-                }
-                $memory = New-Object System.IO.MemoryStream
-                try {
-                    $bitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
-                    [void]$frames.Add(@{ Size = $pixels; Bytes = $memory.ToArray() })
-                } finally {
-                    $memory.Dispose()
-                }
-            } finally {
-                $bitmap.Dispose()
-            }
-        }
-        $stream = [System.IO.File]::Create($OutputPath)
-        try {
-            $writer = New-Object System.IO.BinaryWriter($stream)
-            try {
-                $writer.Write([UInt16]0)
-                $writer.Write([UInt16]1)
-                $writer.Write([UInt16]$frames.Count)
-                $offset = 6 + 16 * $frames.Count
-                foreach ($frame in $frames) {
-                    $sizeByte = if ($frame.Size -eq 256) { 0 } else { $frame.Size }
-                    $writer.Write([byte]$sizeByte)
-                    $writer.Write([byte]$sizeByte)
-                    $writer.Write([byte]0)
-                    $writer.Write([byte]0)
-                    $writer.Write([UInt16]1)
-                    $writer.Write([UInt16]32)
-                    $writer.Write([UInt32]$frame.Bytes.Length)
-                    $writer.Write([UInt32]$offset)
-                    $offset += $frame.Bytes.Length
-                }
-                foreach ($frame in $frames) { $writer.Write([byte[]]$frame.Bytes) }
-            } finally { $writer.Dispose() }
-        } finally { $stream.Dispose() }
-    } finally { $source.Dispose() }
-}
-
-$repoArtwork = Join-Path $PSScriptRoot 'assets\WASA-DEM-approved-artwork.jpg'
-$artworkUrl = 'https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/assets/WASA-DEM-approved-artwork.jpg'
-$fallbackIco = Join-Path $PSScriptRoot 'assets\WASA-DEM.ico'
-$fallbackIconUrl = 'https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/assets/WASA-DEM.ico'
+# The Windows desktop icon is the dedicated, high-contrast square logo
+# provided in the repository. No conversion of the promotional artwork is
+# necessary and the main Python/ASP installation is never changed here.
+# A standalone shortcut script fetches the same GitHub-hosted .ico file.
+$repoIcon = Join-Path $PSScriptRoot 'assets\WASA-DEM.ico'
+$iconUrl = 'https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/assets/WASA-DEM.ico'
 $canonicalIcon = Join-Path $Workspace 'WASA-DEM.ico'
+$temporaryIcon = ''
 $sourceIcon = ''
-$tempArt = ''
-$tempIcon = ''
 try {
     if ($IconPath) {
         if (-not (Test-Path -LiteralPath $IconPath -PathType Leaf)) {
             throw "Requested WASA-DEM icon not found: $IconPath"
         }
         $sourceIcon = [IO.Path]::GetFullPath($IconPath)
+    } elseif (Test-Path -LiteralPath $repoIcon -PathType Leaf) {
+        $sourceIcon = $repoIcon
+        Write-Host 'Using official WASA-DEM icon bundled with GitHub checkout.' -ForegroundColor Green
     } else {
-        $artworkPath = $repoArtwork
-        if (-not (Test-Path -LiteralPath $artworkPath -PathType Leaf)) {
-            $tempArt = Join-Path $env:TEMP ('wasa-dem-artwork-' + [Guid]::NewGuid().ToString('N') + '.jpg')
-            try {
-                Invoke-WebRequest -Uri $artworkUrl -OutFile $tempArt -UseBasicParsing -ErrorAction Stop
-                $artworkPath = $tempArt
-            } catch {
-                Write-Warning "Could not download approved artwork; trying the fallback icon."
-                $artworkPath = ''
-            }
-        }
-        if ($artworkPath) {
-            $tempIcon = Join-Path $env:TEMP ('wasa-dem-rendered-' + [Guid]::NewGuid().ToString('N') + '.ico')
-            try {
-                Convert-WasaArtworkToIcon -ImagePath $artworkPath -OutputPath $tempIcon
-                $sourceIcon = $tempIcon
-                Write-Host 'Using the approved WASA-DEM artwork from GitHub.' -ForegroundColor Green
-            } catch {
-                Write-Warning ("Image-to-icon conversion failed; trying fallback ICO: " + $_.Exception.Message)
-                $sourceIcon = ''
-            }
-        }
-        if (-not $sourceIcon) {
-            if (Test-Path -LiteralPath $fallbackIco -PathType Leaf) {
-                $sourceIcon = $fallbackIco
+        # When users download only this script, obtain the newest icon from
+        # the same GitHub repository. Preserve the cached icon if offline.
+        $temporaryIcon = Join-Path $env:TEMP ('wasa-dem-logo-' + [Guid]::NewGuid().ToString('N') + '.ico')
+        try {
+            Invoke-WebRequest -Uri $iconUrl -OutFile $temporaryIcon -UseBasicParsing -ErrorAction Stop
+            $sourceIcon = $temporaryIcon
+            Write-Host 'Downloaded the latest official WASA-DEM icon from GitHub.' -ForegroundColor Green
+        } catch {
+            if (Test-Path -LiteralPath $canonicalIcon -PathType Leaf) {
+                $sourceIcon = $canonicalIcon
+                Write-Warning 'Icon download failed; reusing the existing cached icon.'
             } else {
-                $tempIcon = Join-Path $env:TEMP ('wasa-dem-fallback-' + [Guid]::NewGuid().ToString('N') + '.ico')
-                try {
-                    Invoke-WebRequest -Uri $fallbackIconUrl -OutFile $tempIcon -UseBasicParsing -ErrorAction Stop
-                    $sourceIcon = $tempIcon
-                } catch {
-                    if (Test-Path -LiteralPath $canonicalIcon -PathType Leaf) {
-                        $sourceIcon = $canonicalIcon
-                        Write-Warning 'No connection to GitHub; reusing a previously saved icon.'
-                    } else {
-                        throw "Cannot download either WASA-DEM artwork or its fallback ICO."
-                    }
-                }
+                throw ("Official WASA-DEM icon could not be downloaded: " + $_.Exception.Message)
             }
         }
     }
+
     $magic = @(Get-Content -LiteralPath $sourceIcon -Encoding Byte -TotalCount 6 -ErrorAction Stop)
-    if ((Get-Item -LiteralPath $sourceIcon).Length -lt 1024 -or $magic.Count -lt 6 -or
+    if ((Get-Item -LiteralPath $sourceIcon).Length -lt 1024 -or $magic.Count -ne 6 -or
         $magic[0] -ne 0 -or $magic[1] -ne 0 -or $magic[2] -ne 1 -or $magic[3] -ne 0) {
-        throw "Invalid Windows icon file: $sourceIcon"
+        throw "Selected icon is not a valid Windows .ico file: $sourceIcon"
     }
+
+    # Use a versioned icon filename, so Explorer doesn't reuse old artwork
+    # after an update because of its built-in icon cache.
     $iconHash = (Get-FileHash -LiteralPath $sourceIcon -Algorithm SHA256).Hash.Substring(0, 12).ToLowerInvariant()
     $versionedIcon = Join-Path $Workspace ("WASA-DEM-" + $iconHash + ".ico")
     if (-not (Test-Path -LiteralPath $versionedIcon -PathType Leaf)) {
@@ -281,12 +208,10 @@ try {
     }
     $shortcut.IconLocation = "$versionedIcon,0"
     $shortcut.Save()
-    Write-Host "WASA-DEM desktop icon applied: $versionedIcon" -ForegroundColor Green
+    Write-Host "WASA-DEM desktop icon updated: $versionedIcon" -ForegroundColor Green
 } finally {
-    foreach ($tmp in @($tempArt, $tempIcon)) {
-        if ($tmp -and (Test-Path -LiteralPath $tmp -PathType Leaf)) {
-            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-        }
+    if ($temporaryIcon -and (Test-Path -LiteralPath $temporaryIcon -PathType Leaf)) {
+        Remove-Item -LiteralPath $temporaryIcon -Force -ErrorAction SilentlyContinue
     }
 }
 

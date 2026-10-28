@@ -1,6 +1,6 @@
 # WASA-DEM
 
-<a href="assets/WASA-DEM-approved-artwork.jpg"><img src="assets/WASA-DEM-approved-artwork.jpg" alt="WASA-DEM satellite stereo and DEM generation branding" align="right" width="170"></a>
+<a href="assets/WASA-DEM-official-logo.jpg"><img src="assets/WASA-DEM-official-logo.jpg" alt="WASA-DEM official satellite and mountain logo" align="right" width="160"></a>
 
 **Workflow for Ames-based Satellite Analysis and Digital Elevation Model Generation**
 
@@ -65,7 +65,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$HOME\Downloads\install_windows.ps1"
 ```
 
-The installer checks available environment managers, reuses an existing `pleiades_asp` environment or creates it with Python 3.11, installs WASA-DEM and required Python dependencies, sets up/verifies WSL and ASP, prepares JupyterLab, and creates the **WASA-DEM** desktop shortcut with the official GitHub icon. The interface runs under Windows, while ASP processing uses WSL.
+The installer checks available environment managers, reuses an existing `pleiades_asp` environment or creates it with Python 3.11, installs WASA-DEM and required Python dependencies, sets up/verifies WSL and ASP, prepares JupyterLab, and creates the **WASA-DEM** desktop shortcut with the official square logo from GitHub (without the lower terrain). The interface runs under Windows, while ASP processing uses WSL.
 
 The optional [first-time helper](install_windows_first_time.ps1) now calls **the same standard installer**; you do **not** need to run both scripts.
 
@@ -494,7 +494,9 @@ The archived version of **Pléiades ASP Workflow** is available through **Recher
 
 ## WASA-DEM branding and artwork
 
-The [full-resolution approved design](assets/WASA-DEM-approved-artwork.jpg) is available for presentations, software announcements, and scientific communication. A [scalable logo](assets/WASA-DEM-logo.svg) and a [legacy backup icon](assets/WASA-DEM.ico) are also retained. The Windows installer automatically creates and updates the desktop shortcut icon from the approved artwork.
+**Official logo:** [WASA-DEM square logo](assets/WASA-DEM-official-logo.jpg), without the lower rainbow terrain, and its [Windows desktop icon](assets/WASA-DEM.ico). The normal Windows installer and the standalone shortcut updater automatically use the official `.ico` file from GitHub. No separate download or Python/ASP reinstallation is needed to refresh the desktop icon.
+
+**Promotional artwork:** The [full scientific image with the colored elevation model](assets/WASA-DEM-approved-artwork.jpg) remains available for presentations, publications, and announcements. The [scalable vector logo](assets/WASA-DEM-logo.svg) and [GitHub banner](assets/WASA-DEM-GitHub-banner.svg) are also retained as older branding assets.
 
 ## License
 
