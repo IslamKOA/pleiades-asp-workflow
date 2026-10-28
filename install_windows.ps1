@@ -1,6 +1,6 @@
 # WASA-DEM - Windows installer and updater
 # Run: powershell -ExecutionPolicy Bypass -File .\install_windows.ps1
-# Requires an existing micromamba, mamba, or conda installation.
+# Reuses existing Conda/Mamba/Micromamba or installs standalone Micromamba if missing.
 # Never deletes existing WSL distributions, Conda environments, or user projects.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -29,31 +29,116 @@ function Resolve-Executable([string[]]$Names, [string[]]$Candidates) {
     return $null
 }
 
+function Add-ManagerCandidate([string]$Name, [string]$Exe) {
+    if (-not $Exe -or -not (Test-Path -LiteralPath $Exe -PathType Leaf)) { return }
+    $resolved = (Resolve-Path -LiteralPath $Exe).Path
+    if (@($script:ManagerCandidates | Where-Object { $_.Exe -ieq $resolved }).Count -eq 0) {
+        [void]$script:ManagerCandidates.Add(@{ Name = $Name; Exe = $resolved })
+    }
+}
+
 function Find-EnvironmentManager {
-    # Prefer micromamba if available; do not confuse PowerShell's 'Mamba' alias
-    # with the micromamba.exe executable.
-    $micromamba = Resolve-Executable @('micromamba.exe') @(
+    # Search both PATH and common installation directories. Python itself is
+    # always run INSIDE the selected environment, never via system PATH.
+    $script:ManagerCandidates = New-Object System.Collections.ArrayList
+    foreach ($entry in @(
+        @{ Name = 'micromamba'; Commands = @('micromamba.exe') },
+        @{ Name = 'mamba'; Commands = @('mamba.exe', 'mamba.bat') },
+        @{ Name = 'conda'; Commands = @('conda.exe', 'conda.bat') }
+    )) {
+        foreach ($commandName in $entry.Commands) {
+            $cmd = Get-Command $commandName -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($cmd) { Add-ManagerCandidate $entry.Name $cmd.Source }
+        }
+    }
+    if ($env:CONDA_EXE) { Add-ManagerCandidate 'conda' $env:CONDA_EXE }
+    if ($env:MAMBA_EXE) { Add-ManagerCandidate 'mamba' $env:MAMBA_EXE }
+    foreach ($candidate in @(
         (Join-Path $env:LOCALAPPDATA 'micromamba\micromamba.exe'),
         (Join-Path $HOME 'micromamba\micromamba.exe'),
-        (Join-Path $HOME 'micromamba\Library\bin\micromamba.exe')
-    )
-    if ($micromamba) { return @{ Name = 'micromamba'; Exe = $micromamba } }
+        (Join-Path $HOME 'micromamba\Library\bin\micromamba.exe'),
+        (Join-Path $HOME '.local\bin\micromamba.exe')
+    )) { Add-ManagerCandidate 'micromamba' $candidate }
 
-    $mamba = Resolve-Executable @('mamba.exe', 'mamba.bat') @()
-    if ($mamba) { return @{ Name = 'mamba'; Exe = $mamba } }
-
-    $condaCandidates = @()
-    foreach ($root in @($env:USERPROFILE, $env:LOCALAPPDATA, $env:PROGRAMDATA)) {
-        if ($root) {
-            foreach ($folder in @('miniforge3', 'miniconda3', 'anaconda3', 'Miniforge3', 'Miniconda3', 'Anaconda3')) {
-                $condaCandidates += Join-Path $root "$folder\Scripts\conda.exe"
-                $condaCandidates += Join-Path $root "$folder\condabin\conda.bat"
+    foreach ($root in @($env:USERPROFILE, $env:LOCALAPPDATA, $env:PROGRAMDATA, $env:CONDA_PREFIX)) {
+        if (-not $root) { continue }
+        foreach ($folder in @(
+            '', 'miniforge3','miniconda3','anaconda3',
+            'Miniforge3','Miniconda3','Anaconda3',
+            'Programs\Miniforge3','Programs\Miniconda3','Programs\Anaconda3',
+            'Continuum\anaconda3'
+        )) {
+            $base = if ($folder) { Join-Path $root $folder } else { $root }
+            foreach ($relative in @('Scripts\conda.exe','condabin\conda.bat')) {
+                Add-ManagerCandidate 'conda' (Join-Path $base $relative)
             }
         }
     }
-    $conda = Resolve-Executable @('conda.exe', 'conda.bat') $condaCandidates
-    if ($conda) { return @{ Name = 'conda'; Exe = $conda } }
-    throw 'No supported environment manager found. Install micromamba, Miniforge, Miniconda, or Anaconda and rerun this installer.'
+
+    # If an existing pleiades_asp environment is found, choose its manager.
+    # Otherwise choose the first usable manager and create a new environment.
+    $firstWorking = $null
+    foreach ($candidate in $script:ManagerCandidates) {
+        if ($candidate.Name -eq 'micromamba' -and -not $env:MAMBA_ROOT_PREFIX) {
+            foreach ($root in @((Join-Path $HOME 'micromamba'), (Join-Path $env:LOCALAPPDATA 'micromamba'))) {
+                if (Test-Path -LiteralPath (Join-Path $root "envs\$EnvironmentName") -PathType Container) {
+                    $env:MAMBA_ROOT_PREFIX = $root
+                    break
+                }
+            }
+            if (-not $env:MAMBA_ROOT_PREFIX) { $env:MAMBA_ROOT_PREFIX = Join-Path $HOME 'micromamba' }
+        }
+        try {
+            $raw = & $candidate.Exe env list --json 2>$null
+            if ($LASTEXITCODE -ne 0) { throw "exit $LASTEXITCODE" }
+            $info = ($raw | Out-String) | ConvertFrom-Json -ErrorAction Stop
+            if ($null -eq $info.envs) { throw 'Missing environments in JSON output' }
+            $hasEnvironment = @($info.envs | Where-Object {
+                (Split-Path -Path $_ -Leaf) -eq $EnvironmentName
+            }).Count -gt 0
+            if ($hasEnvironment) {
+                Write-Host "Found existing $EnvironmentName environment using $($candidate.Name)."
+                return $candidate
+            }
+            if (-not $firstWorking) { $firstWorking = $candidate }
+        } catch {
+            Write-Warning ("Ignoring unavailable environment manager at " + $candidate.Exe + ": " + $_.Exception.Message)
+        }
+    }
+    if ($firstWorking) { return $firstWorking }
+    return $null
+}
+
+function Install-MicromambaFallback {
+    # Official standalone Micromamba build: no preinstalled Python or Git.
+    if (-not [Environment]::Is64BitOperatingSystem) { throw '64-bit Windows is required.' }
+    if (-not (Get-Command tar.exe -CommandType Application -ErrorAction SilentlyContinue)) {
+        throw 'Windows tar.exe is required to extract Micromamba. Install tar or a Conda-compatible manager and rerun.'
+    }
+    $exe = Join-Path $env:LOCALAPPDATA 'micromamba\micromamba.exe'
+    if (Test-Path -LiteralPath $exe -PathType Leaf) {
+        $env:MAMBA_ROOT_PREFIX = if ($env:MAMBA_ROOT_PREFIX) { $env:MAMBA_ROOT_PREFIX } else { Join-Path $HOME 'micromamba' }
+        return @{ Name = 'micromamba'; Exe = $exe }
+    }
+    Write-Host 'No working Conda/Mamba/Micromamba found; installing standalone Micromamba for this user...' -ForegroundColor Yellow
+    $stage = Join-Path $env:TEMP ('wasa-micromamba-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $stage -Force | Out-Null
+    try {
+        $archive = Join-Path $stage 'micromamba.tar.bz2'
+        Invoke-WebRequest -Uri 'https://micro.mamba.pm/api/micromamba/win-64/latest' -OutFile $archive -UseBasicParsing
+        & tar.exe -xf $archive -C $stage 'Library/bin/micromamba.exe'
+        Assert-ExitCode 'Extract Micromamba'
+        $extracted = Join-Path $stage 'Library\bin\micromamba.exe'
+        if (-not (Test-Path -LiteralPath $extracted -PathType Leaf)) { throw 'Micromamba executable missing in extracted archive.' }
+        New-Item -ItemType Directory -Path (Split-Path $exe -Parent) -Force | Out-Null
+        Copy-Item -LiteralPath $extracted -Destination $exe
+        & $exe --version
+        Assert-ExitCode 'Verify Micromamba'
+    } finally {
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $env:MAMBA_ROOT_PREFIX) { $env:MAMBA_ROOT_PREFIX = Join-Path $HOME 'micromamba' }
+    return @{ Name = 'micromamba'; Exe = $exe }
 }
 
 function Invoke-EnvironmentCommand([string[]]$Arguments, [string]$Action) {
@@ -79,6 +164,7 @@ function Find-UsableWslDistro {
 
 Write-Host '=== WASA-DEM: Install / Update ==='
 $Manager = Find-EnvironmentManager
+if (-not $Manager) { $Manager = Install-MicromambaFallback }
 Write-Host "Environment manager: $($Manager.Name)"
 Write-Host "Executable: $($Manager.Exe)"
 
@@ -95,6 +181,9 @@ if (-not $environmentExists) {
 } else {
     Write-Host "Reusing existing environment: $EnvironmentName"
 }
+# Verify the real Python inside the managed environment. Never use Windows'
+# Python app alias or a possibly unrelated system-level python.exe.
+Invoke-EnvironmentCommand @('run', '-n', $EnvironmentName, 'python', '-c', 'import sys; print("WASA-DEM Python:", sys.executable, sys.version); assert sys.version_info >= (3, 10)') 'Verify environment Python (>=3.10)'
 
 # 2. Download the repository once, ensuring notebook and Python package match.
 Write-Host '[2/7] Downloading GitHub main branch (Git is not required)...'
