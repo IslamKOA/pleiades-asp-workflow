@@ -1011,8 +1011,10 @@ def install_asp(
     return bin_dir
 
 
-def wsl_execution_environment() -> dict[str, str]:
-    version = get_asp_version()
+def wsl_execution_environment(version: str | None = None) -> dict[str, str]:
+    # Explicit version permits point2las/PDAL to run from ASP 3.5.0 while
+    # the main stereo workflow remains pinned to the user-selected release.
+    version = version or get_asp_version()
     asp_bin = asp_bin_location(version)
     existing = _wsl_path()
 
