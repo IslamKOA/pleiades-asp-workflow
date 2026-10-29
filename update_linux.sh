@@ -10,6 +10,28 @@ if [[ -z "$python_exe" ]]; then
     if [[ -x "$p" ]]; then python_exe="$p"; break; fi
   done
 fi
+# Detect environments installed outside standard home locations, including
+# shared/workdir Micromamba roots. Prefer active interpreter, then manager listing.
+if [[ -z "$python_exe" || ! -x "$python_exe" ]]; then
+  if [[ "${CONDA_DEFAULT_ENV:-}" == "pleiades_asp" ]] && command -v python >/dev/null 2>&1; then
+    active_python="$(command -v python)"
+    [[ -x "$active_python" ]] && python_exe="$active_python"
+  fi
+fi
+if [[ -z "$python_exe" || ! -x "$python_exe" ]]; then
+  for manager in micromamba mamba conda; do
+    if command -v "$manager" >/dev/null 2>&1; then
+      listing="$("$manager" env list --json 2>/dev/null || true)"
+      if [[ -n "$listing" ]]; then
+        python_found="$(printf '%s' "$listing" | grep -oE '"[^"]*/envs/pleiades_asp"' | head -n 1 | tr -d '"' || true)"
+        if [[ -n "$python_found" && -x "$python_found/bin/python" ]]; then
+          python_exe="$python_found/bin/python"
+          break
+        fi
+      fi
+    fi
+  done
+fi
 [[ -n "$python_exe" && -x "$python_exe" ]] || { echo "WASA-DEM: pleiades_asp Python not found. Activate the environment or set WASA_DEM_PYTHON." >&2; exit 1; }
 echo "WASA-DEM: updating Python package without reinstalling dependencies or ASP."
 "$python_exe" -m pip install --upgrade --force-reinstall --no-deps   "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
