@@ -32,7 +32,27 @@ if [[ -z "$python_exe" || ! -x "$python_exe" ]]; then
     fi
   done
 fi
-[[ -n "$python_exe" && -x "$python_exe" ]] || { echo "WASA-DEM: pleiades_asp Python not found. Activate the environment or set WASA_DEM_PYTHON." >&2; exit 1; }
+# When environments are stored in workdir or configured through an external
+# Mamba root, ask the environment manager itself for the active interpreter.
+# This is how install_linux.sh successfully runs the environment as well.
+if [[ -z "$python_exe" || ! -x "$python_exe" ]]; then
+  for manager in "$HOME/miniconda3/bin/mamba" "$HOME/miniconda3/bin/conda" \
+    "$HOME/.local/bin/micromamba" "$HOME/miniforge3/bin/mamba" \
+    "$HOME/miniforge3/bin/conda" micromamba mamba conda; do
+    if [[ "$manager" == */* ]]; then
+      [[ -x "$manager" ]] || continue
+    else
+      command -v "$manager" >/dev/null 2>&1 || continue
+    fi
+    candidate="$("$manager" run -n pleiades_asp python -c 'import sys; print(sys.executable)' 2>/dev/null | tail -n 1 || true)"
+    if [[ -n "$candidate" && -x "$candidate" && "$candidate" == */envs/pleiades_asp/bin/python ]]; then
+      python_exe="$candidate"
+      echo "WASA-DEM: existing environment located via $manager: $python_exe"
+      break
+    fi
+  done
+fi
+[[ -n "$python_exe" && -x "$python_exe" ]] || { echo "WASA-DEM: no usable pleiades_asp environment found. To create it automatically, run the README Linux Install command; to use an external prefix set WASA_DEM_PYTHON=/full/path/bin/python." >&2; exit 1; }
 echo "WASA-DEM: updating Python package without reinstalling dependencies or ASP."
 "$python_exe" -m pip install --upgrade --force-reinstall --no-deps   "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
 if [[ "${1:-}" == "--refresh-notebooks" ]]; then
