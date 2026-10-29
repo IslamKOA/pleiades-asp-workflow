@@ -45,7 +45,7 @@ For reproducibility of the associated study, the reference processing version is
 
 ## Installation and updates
 
-**Choose your operating system and task:** [Windows — new installation](#windows--new-installation) · [Windows — update](#windows--update-an-existing-installation) · [Linux — new installation](#linux--new-installation) · [Linux — update](#linux--update-an-existing-installation)
+**Choose your operating system and task:** [Windows — new installation](#windows--new-installation) · [Windows — update](#windows--update-an-existing-installation) · [Linux — Install](#linux--install) · [Linux — Update](#linux--update)
 
 The recommended installers support Python **3.10+** (Python 3.11 for a new environment), prefer an existing usable **Conda/Mamba/Micromamba** installation, and can download standalone Micromamba if none is available. **Git and a separately installed system Python are not required.** Internet connectivity is needed for initial downloads.
 
@@ -138,24 +138,19 @@ The installer checks Conda first, then Micromamba/Mamba; if no usable manager is
 
 ### Linux — Update
 
-Use this command whenever you want the latest WASA-DEM software **and desktop icon**:
+**Update WASA-DEM and refresh its optional Linux desktop shortcut:**
 
 ```bash
-URL="https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_linux.sh"
-if command -v curl >/dev/null 2>&1; then
-  curl -fL "$URL" -o update_linux.sh
-elif command -v wget >/dev/null 2>&1; then
-  wget -O update_linux.sh "$URL"
-else
-  echo "Please install curl or wget to download the updater."
-  exit 1
-fi
-bash update_linux.sh
+curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_linux.sh -o update_linux.sh && bash update_linux.sh
 ```
 
-The updater reuses an existing `pleiades_asp` environment, including nonstandard work-directory installations, by asking Mamba/Conda for its Python executable. If no usable environment exists, use **Linux — Install** above: the installer automatically creates Python and the environment, installing Micromamba if no usable environment manager is available. Updating never silently removes or replaces other environments. The updater keeps your Python environment, dependencies, ASP installation, existing notebooks and research data. It refreshes the installed software; it creates a desktop shortcut only if the Linux session has a graphical display and a browser. Otherwise it skips/removes only its previously generated shortcut, without affecting WASA-DEM or Jupyter. It does **not** overwrite customized notebooks. For optional notebook refreshes, back up custom edits first and run `bash update_linux.sh --refresh-notebooks`.
+**If `curl` is unavailable**, use `wget`:
 
-**Remote/headless Linux:** JupyterLab can run without a graphical browser on the server; open it from a browser on your own computer using the server URL, with SSH port forwarding if required. Desktop shortcuts are optional in this case. See [Linux desktop launcher troubleshooting](docs/linux-desktop-troubleshooting.md) for detailed diagnostics and safe reinstall procedures.
+```bash
+wget -qO update_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_linux.sh && bash update_linux.sh
+```
+
+The updater reuses the existing `pleiades_asp` environment and keeps ASP, scientific dependencies, research data, and customized notebooks unchanged. It refreshes the desktop shortcut only if a graphical browser is available. The update does not require Conda activation beforehand.
 
 ### Launch WASA-DEM
 
@@ -167,13 +162,14 @@ conda run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_
 
 For Micromamba/Mamba, substitute the corresponding manager command.
 
-**Linux:** start JupyterLab normally from the installed environment (the installer also prints the exact command):
+**Linux:** after installation or update, activate the `pleiades_asp` environment and launch JupyterLab normally:
 
 ```bash
-~/miniconda3/envs/pleiades_asp/bin/jupyter lab "$HOME/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb"
+conda activate pleiades_asp
+jupyter lab
 ```
 
-If a different Conda/Micromamba root was used, replace the executable path with the one printed by the installer. No `--no-browser` flag is required. In the notebook, select the **pleiades_asp** Python kernel if necessary; shell commands such as `!bundle_adjust` and `!point2las` require that kernel's `bin` directory on `PATH`.
+The installer and updater print the exact `conda activate /full/path/to/pleiades_asp` command for systems with multiple Conda/Micromamba roots. This is necessary when the named environment is not in the current Conda installation. **The installer cannot activate the parent terminal automatically.** Alternatively, launch with the full Jupyter executable printed by the installer.
 
 In JupyterLab, open `Pleiades_ASP_Workflow.ipynb` and click **▶ Start WASA-DEM**. The default `Pleiades_ASP_Workflow/` folder and Python package name remain unchanged for compatibility.
 
