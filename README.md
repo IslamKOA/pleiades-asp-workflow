@@ -142,6 +142,8 @@ bash update_linux.sh
 
 This updates the Python package from `main` with `--no-deps` and **recreates or refreshes both the WASA-DEM desktop shortcut and its official icon**. It **does not remove or replace** your Conda environment, ASP installation, project folders, data, or customized notebooks. Updates to **package-managed notebooks** require an explicit opt-in after backing up custom edits: `bash update_linux.sh --refresh-notebooks`. Ordinary `pip install` does **not** create desktop shortcuts; use this updater instead. Desktop files are installed in `~/.local/share/applications`, with a copy on `~/Desktop` or `~/Bureau` when present; some desktops require **Allow Launching**. A desktop shortcut is not useful on a machine without a graphical desktop.
 
+**XFCE / Debian desktop launch troubleshooting:** If the WASA-DEM icon exists but double-clicking reports **“Timeout was reached”**, use the recommended updater again to refresh the `.desktop` entry. It now disables freedesktop startup notification for the long-running JupyterLab server. If the timeout persists, launch `~/.local/bin/wasa-dem-launch` in a terminal to see the underlying Jupyter error, and verify that `~/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb` exists. Do not delete scientific environments or ASP to fix a desktop-launcher timeout.
+
 ### Linux — manual package-only update (advanced)
 
 If you specifically want to update **only** the installed WASA-DEM Python package, with no automatic Linux icon/shortcut update, activate `pleiades_asp` and use:
