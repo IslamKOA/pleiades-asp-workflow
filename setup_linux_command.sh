@@ -18,4 +18,9 @@ export PATH=$bin_q:"\$PATH"
 exec $exe_q lab --ServerApp.root_dir=$workspace_q --ServerApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb "\$@"
 EOF
 chmod 755 "$HOME/.local/bin/wasa-dem"
+if ! grep -Fq -- "--ServerApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb" "$HOME/.local/bin/wasa-dem"; then
+  echo "[FAIL] WASA-DEM launcher did not configure direct notebook opening." >&2
+  exit 1
+fi
 echo "[OK] WASA-DEM terminal launcher: $HOME/.local/bin/wasa-dem"
+echo "[OK] Launcher will open Pleiades_ASP_Workflow.ipynb directly."

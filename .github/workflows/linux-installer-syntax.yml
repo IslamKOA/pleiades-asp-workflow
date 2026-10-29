@@ -13,3 +13,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check Linux installer Bash syntax
         run: bash -n install_linux.sh setup_linux_command.sh update_linux.sh
+      - name: Verify launcher opens notebook directly
+        run: |
+          temp_home="$(mktemp -d)"
+          mkdir -p "$temp_home/env/bin" "$temp_home/Pleiades_ASP_Workflow"
+          touch "$temp_home/env/bin/python" "$temp_home/env/bin/jupyter" "$temp_home/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb"
+          chmod +x "$temp_home/env/bin/python" "$temp_home/env/bin/jupyter"
+          HOME="$temp_home" WASA_DEM_PYTHON="$temp_home/env/bin/python" bash setup_linux_command.sh
+          grep -Fq -- '--ServerApp.root_dir=' "$temp_home/.local/bin/wasa-dem"
+          grep -Fq -- '--ServerApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb' "$temp_home/.local/bin/wasa-dem"
+          ! grep -Fq -- ' lab /' "$temp_home/.local/bin/wasa-dem"
+          rm -rf "$temp_home"
