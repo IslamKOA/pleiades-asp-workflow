@@ -125,11 +125,27 @@ bash install_linux.sh
 
 If `curl` is missing, use `wget -O install_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh`, then run `bash install_linux.sh`.
 
-**Linux graphical desktop shortcut:** After a successful Linux installation in a graphical session, the installer creates a **WASA-DEM** application-menu entry and, if the Desktop directory exists, a **WASA-DEM.desktop** shortcut using the official logo. It opens the installed notebook in JupyterLab with the existing `pleiades_asp` environment. Some GNOME desktops require right-click → **Allow Launching**. Headless servers skip desktop integration; **a dedicated GPU is not required** for the shortcut.
+**Linux graphical desktop shortcut:** When a desktop directory or graphical session is detected, the installer creates a **WASA-DEM** application-menu entry and a `.desktop` shortcut where supported. **A GPU is not required, but opening JupyterLab locally requires an installed graphical web browser** (such as Firefox or Chromium). A thin-client/remote XFCE desktop may have a desktop but no browser; in that case Jupyter can still run on the server and its tokenized HTTP URL can be opened through a browser on your personal computer, subject to network access/SSH tunneling. The icon alone cannot supply a browser. Some desktops require **Allow Launching**.
 
 The installer detects an existing usable environment manager, reuses `pleiades_asp` or installs standalone Micromamba and Python 3.11 in the user account, installs WASA-DEM from a **GitHub ZIP archive** (not `git clone`), and installs/verifies ASP and initializes the notebook workspace.
 
 On restricted servers, system-level libraries required by the ASP binaries may need administrator assistance. Do **not** use `sudo` to create the Python environment.
+
+### Linux — clean reinstall of WASA-DEM only (advanced)
+
+To test a clean WASA-DEM setup **without deleting unrelated research environments**, stop Jupyter servers started by WASA-DEM, back up modified notebooks and datasets, and remove only the dedicated `pleiades_asp` environment if it is exclusively used by WASA-DEM. Keep `base`, `asp`, `gdal`, `isis`, `jupyter`, `pleiades_asp_v2`, and unrelated micromamba environments. Avoid deleting an entire Miniconda installation. In the system shell, after `conda deactivate`:
+
+```bash
+# Check the environment and back up user-owned work before removal.
+conda env list
+# Only if pleiades_asp has no unrelated work:
+conda env remove -n pleiades_asp -y --solver classic
+# Refresh the Linux install script (do not reuse a stale copy).
+curl -fL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh -o install_linux.sh
+bash install_linux.sh
+```
+
+If your Conda version rejects `--solver classic`, repair the Conda solver configuration separately or run `conda env remove -n pleiades_asp -y` if it works; **do not forcibly delete Conda's base folder**. The regular installer is safe to rerun without deleting anything. It now preserves an existing notebook workspace by default; set `WASA_DEM_REFRESH_NOTEBOOKS=1` only if you explicitly intend to replace package-managed notebooks. A full clean-machine prerequisite test requires a separate clean Linux system or virtual machine.
 
 ### Linux — update an existing installation (recommended: software + desktop icon)
 
