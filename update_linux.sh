@@ -60,7 +60,6 @@ if [[ "${1:-}" == "--refresh-notebooks" ]]; then
     echo "WASA-DEM: refreshing managed notebooks (back up custom edits first): $workspace"
     "$(dirname "$python_exe")/pleiades-workflow-init" "$workspace"
 fi
-echo "WASA-DEM: lightweight update complete."
 launcher_helper="$(mktemp)"
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/setup_linux_command.sh -o "$launcher_helper"
@@ -70,7 +69,9 @@ else
   echo "WASA-DEM: curl or wget needed for launcher" >&2
 fi
 if [[ -s "$launcher_helper" ]]; then
-  WASA_DEM_PYTHON="$python_exe" bash "$launcher_helper" || echo "WASA-DEM: Could not create terminal launcher."
+  WASA_DEM_PYTHON="$python_exe" bash "$launcher_helper"
 fi
 rm -f "$launcher_helper"
+[[ -x "$HOME/.local/bin/wasa-dem" ]] || { echo "[FAIL] WASA-DEM launcher was not created." >&2; exit 1; }
+echo "[OK] WASA-DEM lightweight update complete; launcher refreshed."
 echo "Launch WASA-DEM with: $HOME/.local/bin/wasa-dem"
