@@ -131,7 +131,7 @@ The installer detects an existing usable environment manager, reuses `pleiades_a
 
 On restricted servers, system-level libraries required by the ASP binaries may need administrator assistance. Do **not** use `sudo` to create the Python environment.
 
-### Linux — refresh WASA-DEM and its desktop shortcut (recommended)
+### Linux — update an existing installation (recommended: software + desktop icon)
 
 Download and run the safe updater from a terminal logged in as your Linux desktop user:
 
@@ -142,19 +142,22 @@ bash update_linux.sh
 
 This updates the Python package from `main` with `--no-deps` and **recreates or refreshes both the WASA-DEM desktop shortcut and its official icon**. It **does not remove or replace** your Conda environment, ASP installation, project folders, data, or customized notebooks. Updates to **package-managed notebooks** require an explicit opt-in after backing up custom edits: `bash update_linux.sh --refresh-notebooks`. Ordinary `pip install` does **not** create desktop shortcuts; use this updater instead. Desktop files are installed in `~/.local/share/applications`, with a copy on `~/Desktop` or `~/Bureau` when present; some desktops require **Allow Launching**. A desktop shortcut is not useful on a machine without a graphical desktop.
 
-### Linux — update an existing installation
+### Linux — manual package-only update (advanced)
 
-If the `pleiades_asp` environment and ASP are already working, activate that environment and update only the WASA-DEM software package:
+If you specifically want to update **only** the installed WASA-DEM Python package, with no automatic Linux icon/shortcut update, activate `pleiades_asp` and use:
 
 ```bash
 python -m pip install --upgrade --force-reinstall --no-deps \
   "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
-pleiades-workflow-init
 ```
 
-`--no-deps` preserves installed dependency versions. This is the **recommended lightweight Linux update** when the environment is healthy. The workspace initialization overwrites package-managed notebooks, so back up modifications first.
+This is **not the recommended general Linux update**, because `pip` does not run the desktop-shortcut setup. Use [the recommended Linux updater](#linux--update-an-existing-installation-recommended-software--desktop-icon) above for package **and** icon updates. Do not run `pleiades-workflow-init` as part of every routine update: it refreshes package-managed notebooks and may overwrite custom edits. After backing up custom notebooks, opt into that refresh with:
 
-If the Python environment, dependencies, or ASP installation is broken or missing, redownload `install_linux.sh` and rerun it as in **Linux — new installation**. It detects/reuses existing resources where possible, but may install/update dependencies and ASP. It does not delete user project data.
+```bash
+bash update_linux.sh --refresh-notebooks
+```
+
+If Python dependencies or ASP are missing or broken, use the [full Linux installation procedure](#linux--new-installation) instead of the lightweight updater.
 
 ### Launch WASA-DEM
 
