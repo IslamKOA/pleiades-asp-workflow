@@ -153,21 +153,6 @@ fi
 ok "WASA-DEM notebook available."
 
 
-# Desktop integration is refreshed for both new installations and reinstalls.
-# The helper also works via update_linux.sh without re-running ASP installation.
-if [[ -d "$HOME/Desktop" || -d "$HOME/Bureau" || -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
-    desktop_helper="$(mktemp)"
-    if download "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/setup_linux_desktop.sh" "$desktop_helper"; then
-        # Resolve the Python interpreter from the existing managed environment.
-        python_path="$(resolve_prefix)/bin/python"
-        WASA_DEM_PYTHON="$python_path" WASA_DEM_WORKSPACE="$WORKSPACE" bash "$desktop_helper" \
-            || say "Desktop shortcut setup failed; WASA-DEM itself is installed and usable."
-    else
-        say "Desktop shortcut helper unavailable; WASA-DEM itself is installed."
-    fi
-    rm -f "$desktop_helper"
-fi
-
 # Use the verified environment prefix instead of parsing 'mamba run' output.
 resolved_prefix="$(resolve_prefix)" || fail "Could not locate the newly installed environment using $selected. Inspect environment list rather than deleting it."
 resolved_python="$resolved_prefix/bin/python"
@@ -191,5 +176,4 @@ ok "WASA-DEM installation complete. All required checks passed."
 say "Launch WASA-DEM with:"
 printf '  %q\n' "$HOME/.local/bin/wasa-dem"
 say "No Conda activation or notebook path required."
-say "On Linux with a graphical browser, double-click WASA-DEM if a shortcut was created."
 say "If no local browser exists, Jupyter still starts; open its URL in a browser on a reachable computer."

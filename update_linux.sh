@@ -60,13 +60,6 @@ if [[ "${1:-}" == "--refresh-notebooks" ]]; then
     echo "WASA-DEM: refreshing managed notebooks (back up custom edits first): $workspace"
     "$(dirname "$python_exe")/pleiades-workflow-init" "$workspace"
 fi
-helper="$(mktemp)"
-trap 'rm -f "$helper"' EXIT
-url="https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/setup_linux_desktop.sh"
-if command -v curl >/dev/null 2>&1; then curl -fLsS "$url" -o "$helper"
-elif command -v wget >/dev/null 2>&1; then wget -q -O "$helper" "$url"
-else echo "WASA-DEM: curl or wget needed for shortcut setup" >&2; exit 1; fi
-WASA_DEM_PYTHON="$python_exe" bash "$helper"
 echo "WASA-DEM: lightweight update complete."
 launcher_helper="$(mktemp)"
 if command -v curl >/dev/null 2>&1; then
