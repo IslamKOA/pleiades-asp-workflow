@@ -134,7 +134,7 @@ curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main
 wget -qO install_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh && PLEIADES_ASP_VERSION=3.3.0 bash install_linux.sh
 ```
 
-The installer checks Conda first, then Micromamba/Mamba; if no usable manager is available, it installs Micromamba automatically. It creates or reuses `pleiades_asp`, downloads WASA-DEM from GitHub without requiring Git, and installs/verifies the selected ASP version. The optional `point2las` export uses a separate ASP 3.5.0 companion on first use when the main ASP is 3.3.0 or 3.4.0. The installer preserves research data and customized notebooks and prints the correct JupyterLab launch command. A desktop shortcut is created only when a graphical desktop and web browser are available (no dedicated GPU required).
+The installer checks Conda first, then Micromamba/Mamba; if no usable manager is available, it installs Micromamba automatically. It creates or reuses `pleiades_asp`, downloads WASA-DEM from GitHub without requiring Git, and installs/verifies the selected ASP version. The optional `point2las` export uses a separate ASP 3.5.0 companion on first use when the main ASP is 3.3.0 or 3.4.0. The installer preserves research data and customized notebooks and creates a simple `~/.local/bin/wasa-dem` launch command. A desktop shortcut is created only when a graphical desktop and web browser are available (no dedicated GPU required).
 
 ### Linux — Update
 
@@ -162,14 +162,13 @@ conda run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_
 
 For Micromamba/Mamba, substitute the corresponding manager command.
 
-**Linux:** after installation or update, activate the `pleiades_asp` environment and launch JupyterLab normally:
+**Linux:** after installation or update, start WASA-DEM with one command—no Conda activation or notebook path required:
 
 ```bash
-conda activate pleiades_asp
-jupyter lab
+~/.local/bin/wasa-dem
 ```
 
-The installer and updater print the exact `conda activate /full/path/to/pleiades_asp` command for systems with multiple Conda/Micromamba roots. This is necessary when the named environment is not in the current Conda installation. **The installer cannot activate the parent terminal automatically.** Alternatively, launch with the full Jupyter executable printed by the installer.
+The installer and updater automatically create or refresh this terminal launcher using the correct `pleiades_asp` environment. It starts JupyterLab normally; if there is no local web browser, copy the Jupyter URL to a browser that can reach your server.
 
 In JupyterLab, open `Pleiades_ASP_Workflow.ipynb` and click **▶ Start WASA-DEM**. The default `Pleiades_ASP_Workflow/` folder and Python package name remain unchanged for compatibility.
 
