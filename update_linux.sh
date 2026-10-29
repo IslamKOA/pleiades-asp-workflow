@@ -68,7 +68,16 @@ elif command -v wget >/dev/null 2>&1; then wget -q -O "$helper" "$url"
 else echo "WASA-DEM: curl or wget needed for shortcut setup" >&2; exit 1; fi
 WASA_DEM_PYTHON="$python_exe" bash "$helper"
 echo "WASA-DEM: lightweight update complete."
-echo "To run WASA-DEM in this terminal:"
-printf '  conda activate %q\n' "$(dirname "$(dirname "$python_exe")")"
-echo "  jupyter lab"
-echo "Activation must be run in your terminal after the updater exits."
+launcher_helper="$(mktemp)"
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/setup_linux_command.sh -o "$launcher_helper"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$launcher_helper" https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/setup_linux_command.sh
+else
+  echo "WASA-DEM: curl or wget needed for launcher" >&2
+fi
+if [[ -s "$launcher_helper" ]]; then
+  WASA_DEM_PYTHON="$python_exe" bash "$launcher_helper" || echo "WASA-DEM: Could not create terminal launcher."
+fi
+rm -f "$launcher_helper"
+echo "Launch WASA-DEM with: $HOME/.local/bin/wasa-dem"
