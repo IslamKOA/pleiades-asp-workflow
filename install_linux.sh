@@ -115,8 +115,15 @@ say "Installing WASA-DEM from a ZIP archive; Git is not required."
 "$selected" run -n "$ENV_NAME" python -m pip install --upgrade "$SOURCE_URL"
 say "Installing/verifying NASA Ames Stereo Pipeline $ASP_VERSION."
 "$selected" run -n "$ENV_NAME" asp-install "$ASP_VERSION"
-say "Refreshing the existing Jupyter workspace."
-"$selected" run -n "$ENV_NAME" pleiades-workflow-init "$WORKSPACE"
+if [[ ! -f "$WORKSPACE/Pleiades_ASP_Workflow.ipynb" ]]; then
+    say "Initializing the new Jupyter workspace."
+    "$selected" run -n "$ENV_NAME" pleiades-workflow-init "$WORKSPACE"
+elif [[ "${WASA_DEM_REFRESH_NOTEBOOKS:-0}" == "1" ]]; then
+    say "Explicitly refreshing package-managed notebooks; user edits may be overwritten."
+    "$selected" run -n "$ENV_NAME" pleiades-workflow-init "$WORKSPACE"
+else
+    say "Preserving existing workspace and customized notebooks (set WASA_DEM_REFRESH_NOTEBOOKS=1 to refresh explicitly)."
+fi
 [[ -f "$WORKSPACE/Pleiades_ASP_Workflow.ipynb" ]] || fail "Notebook not found in $WORKSPACE."
 
 
