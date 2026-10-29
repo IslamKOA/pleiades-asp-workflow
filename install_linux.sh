@@ -176,6 +176,6 @@ resolved_jupyter="$resolved_prefix/bin/jupyter"
 
 ok "WASA-DEM installation complete. All required checks passed."
 say "Open WASA-DEM using this command (works without Conda activation):"
-printf '  %q lab --no-browser %q\n' "$resolved_jupyter" "$WORKSPACE/Pleiades_ASP_Workflow.ipynb"
+printf '  %q lab %q\n' "$resolved_jupyter" "$WORKSPACE/Pleiades_ASP_Workflow.ipynb"
 say "On Linux with a graphical browser, double-click WASA-DEM if a shortcut was created."
-say "If no local browser exists, open the displayed Jupyter URL in another browser using a secure connection."
+say "If no local browser exists, Jupyter still starts; open its URL in a browser on a reachable computer."
