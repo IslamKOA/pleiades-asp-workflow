@@ -32,6 +32,17 @@ elif command -v wget >/dev/null 2>&1 && wget -q -O "$tmp" "$url"; then
 else
   echo "WASA-DEM: Could not refresh logo; keeping existing icon or using a fallback." >&2
 fi
+# A graphical session alone is not proof a web browser is installed.
+# The generated launcher will print a Jupyter token URL if none is available.
+if ! command -v firefox >/dev/null 2>&1 &&
+   ! command -v chromium >/dev/null 2>&1 &&
+   ! command -v chromium-browser >/dev/null 2>&1 &&
+   ! command -v google-chrome >/dev/null 2>&1 &&
+   ! command -v brave-browser >/dev/null 2>&1 &&
+   ! command -v epiphany >/dev/null 2>&1; then
+  echo "WASA-DEM: No graphical web browser found. The shortcut can start Jupyter, but cannot display it locally."
+  echo "WASA-DEM: Use the printed Jupyter URL in a browser on a reachable computer (SSH tunnel if required)."
+fi
 launcher="$bin_dir/wasa-dem-launch"
 printf -v jupyter_q '%q' "$jupyter"
 printf -v notebook_q '%q' "$notebook"
