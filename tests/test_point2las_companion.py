@@ -61,3 +61,23 @@ def test_cli_scripts_and_notebook_use_companion():
     assert "asp-pdal" in sources
     assert "point2las" in sources
     assert "USE_MICROMAMBA = False" in sources
+
+
+def test_laz_export_notebook_explains_asp_35_companion():
+    """Explain why LAZ export can run ASP 3.5 while stereo stays on 3.3/3.4."""
+    from pathlib import Path
+    import json
+
+    root = Path(__file__).resolve().parents[1]
+    notebook_path = root / "src/pleiades_asp_workflow/interface_bundle/point_density/08_Optional_LAZ_Export_and_Point_Density.ipynb"
+    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+    source = "\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "markdown")
+    assert "## 5. Export point clouds to LAZ" in source
+    assert "ASP 3.3.0 or 3.4.0" in source
+    assert "automatically uses ASP 3.5.0" in source
+    assert "--save-triangulation-error" in source
+    assert "main ASP version" in source
+
+    instructions = (root / "src/pleiades_asp_workflow/interface_bundle/point_density/README.md").read_text(encoding="utf-8")
+    assert "separate ASP 3.5.0 companion" in instructions
+    assert "parallel_stereo" in instructions
