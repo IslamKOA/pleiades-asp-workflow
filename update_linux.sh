@@ -68,3 +68,7 @@ elif command -v wget >/dev/null 2>&1; then wget -q -O "$helper" "$url"
 else echo "WASA-DEM: curl or wget needed for shortcut setup" >&2; exit 1; fi
 WASA_DEM_PYTHON="$python_exe" bash "$helper"
 echo "WASA-DEM: lightweight update complete."
+echo "To run WASA-DEM in this terminal:"
+printf '  conda activate %q\n' "$(dirname "$(dirname "$python_exe")")"
+echo "  jupyter lab"
+echo "Activation must be run in your terminal after the updater exits."
