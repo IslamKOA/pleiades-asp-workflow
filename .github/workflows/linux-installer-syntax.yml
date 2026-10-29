@@ -1,0 +1,15 @@
+name: Linux installer syntax
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  bash-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Linux installer Bash syntax
+        run: bash -n install_linux.sh
