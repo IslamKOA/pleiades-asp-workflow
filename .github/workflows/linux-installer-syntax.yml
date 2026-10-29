@@ -12,4 +12,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check Linux installer Bash syntax
-        run: bash -n install_linux.sh setup_linux_desktop.sh setup_linux_command.sh update_linux.sh
+        run: bash -n install_linux.sh setup_linux_command.sh update_linux.sh
