@@ -131,7 +131,7 @@ fi
 bash install_linux.sh
 ```
 
-The installer detects an existing Conda/Micromamba installation or sets up Micromamba, prepares the `pleiades_asp` environment, installs WASA-DEM and NASA ASP 3.3.0, and creates or refreshes the Linux desktop icon where a desktop is available. It preserves existing research notebooks and data by default. A **graphics card is not necessary**; to open JupyterLab on the Linux desktop, a web browser such as Firefox or Chromium must also be available.
+The installer detects an existing Conda/Micromamba installation or sets up Micromamba, prepares the `pleiades_asp` environment, installs WASA-DEM and NASA ASP 3.3.0, and creates or refreshes the Linux desktop icon **only when a graphical session and a web browser are both available**. It preserves existing research notebooks and data by default. A **graphics card is not necessary**; to open JupyterLab on the Linux desktop, a web browser such as Firefox or Chromium must also be available.
 
 ### Linux — Update
 
@@ -150,7 +150,7 @@ fi
 bash update_linux.sh
 ```
 
-The updater reuses an existing `pleiades_asp` environment, including nonstandard work-directory installations, by asking Mamba/Conda for its Python executable. If no usable environment exists, use **Linux — Install** above: the installer automatically creates Python and the environment, installing Micromamba if no usable environment manager is available. Updating never silently removes or replaces other environments. The updater keeps your Python environment, dependencies, ASP installation, existing notebooks and research data. It refreshes the installed software and desktop shortcut; it does **not** overwrite customized notebooks. For optional notebook refreshes, back up custom edits first and run `bash update_linux.sh --refresh-notebooks`.
+The updater reuses an existing `pleiades_asp` environment, including nonstandard work-directory installations, by asking Mamba/Conda for its Python executable. If no usable environment exists, use **Linux — Install** above: the installer automatically creates Python and the environment, installing Micromamba if no usable environment manager is available. Updating never silently removes or replaces other environments. The updater keeps your Python environment, dependencies, ASP installation, existing notebooks and research data. It refreshes the installed software; it creates a desktop shortcut only if the Linux session has a graphical display and a browser. Otherwise it skips/removes only its previously generated shortcut, without affecting WASA-DEM or Jupyter. It does **not** overwrite customized notebooks. For optional notebook refreshes, back up custom edits first and run `bash update_linux.sh --refresh-notebooks`.
 
 **Remote/headless Linux:** JupyterLab can run without a graphical browser on the server; open it from a browser on your own computer using the server URL, with SSH port forwarding if required. Desktop shortcuts are optional in this case. See [Linux desktop launcher troubleshooting](docs/linux-desktop-troubleshooting.md) for detailed diagnostics and safe reinstall procedures.
 
