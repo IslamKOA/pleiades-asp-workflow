@@ -114,70 +114,45 @@ If you encountered `SyntaxError: '(' was never closed` during the old `Verify en
 
 **ASP version:** ASP **3.3.0** is the scientific reference and default. To request a different main ASP version in the full installer, set `$env:PLEIADES_ASP_VERSION = "3.4.0"` before launching it. The optional `point2las` export uses an isolated ASP 3.5.0 companion when the selected main version is older than 3.5.0.
 
-### Linux — new installation
+### Linux — Install
 
-Requirements: Linux, Bash, `tar` with bzip2 extraction support, internet connectivity, and `curl` **or** `wget`. Git, global Python, and a preinstalled Conda environment are optional.
+Copy and run these commands on Linux:
 
 ```bash
-curl -fL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh -o install_linux.sh
+URL="https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh"
+if command -v curl >/dev/null 2>&1; then
+  curl -fL "$URL" -o install_linux.sh
+elif command -v wget >/dev/null 2>&1; then
+  wget -O install_linux.sh "$URL"
+else
+  echo "Please install curl or wget to download the installer."
+  exit 1
+fi
 bash install_linux.sh
 ```
 
-If `curl` is missing, use `wget -O install_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh`, then run `bash install_linux.sh`.
+The installer detects an existing Conda/Micromamba installation or sets up Micromamba, prepares the `pleiades_asp` environment, installs WASA-DEM and NASA ASP 3.3.0, and creates or refreshes the Linux desktop icon where a desktop is available. It preserves existing research notebooks and data by default. A **graphics card is not necessary**; to open JupyterLab on the Linux desktop, a web browser such as Firefox or Chromium must also be available.
 
-**Linux graphical desktop shortcut:** When a desktop directory or graphical session is detected, the installer creates a **WASA-DEM** application-menu entry and a `.desktop` shortcut where supported. **A GPU is not required, but opening JupyterLab locally requires an installed graphical web browser** (such as Firefox or Chromium). A thin-client/remote XFCE desktop may have a desktop but no browser; in that case Jupyter can still run on the server and its tokenized HTTP URL can be opened through a browser on your personal computer, subject to network access/SSH tunneling. The icon alone cannot supply a browser. Some desktops require **Allow Launching**.
+### Linux — Update
 
-The installer detects an existing usable environment manager, reuses `pleiades_asp` or installs standalone Micromamba and Python 3.11 in the user account, installs WASA-DEM from a **GitHub ZIP archive** (not `git clone`), and installs/verifies ASP and initializes the notebook workspace.
-
-On restricted servers, system-level libraries required by the ASP binaries may need administrator assistance. Do **not** use `sudo` to create the Python environment.
-
-### Linux — clean reinstall of WASA-DEM only (advanced)
-
-To test a clean WASA-DEM setup **without deleting unrelated research environments**, stop Jupyter servers started by WASA-DEM, back up modified notebooks and datasets, and remove only the dedicated `pleiades_asp` environment if it is exclusively used by WASA-DEM. Keep `base`, `asp`, `gdal`, `isis`, `jupyter`, `pleiades_asp_v2`, and unrelated micromamba environments. Avoid deleting an entire Miniconda installation. In the system shell, after `conda deactivate`:
+Use this command whenever you want the latest WASA-DEM software **and desktop icon**:
 
 ```bash
-# Check the environment and back up user-owned work before removal.
-conda env list
-# Only if pleiades_asp has no unrelated work:
-conda env remove -n pleiades_asp -y --solver classic
-# Refresh the Linux install script (do not reuse a stale copy).
-curl -fL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh -o install_linux.sh
-bash install_linux.sh
-```
-
-If your Conda version rejects `--solver classic`, repair the Conda solver configuration separately or run `conda env remove -n pleiades_asp -y` if it works; **do not forcibly delete Conda's base folder**. The regular installer is safe to rerun without deleting anything. It now preserves an existing notebook workspace by default; set `WASA_DEM_REFRESH_NOTEBOOKS=1` only if you explicitly intend to replace package-managed notebooks. A full clean-machine prerequisite test requires a separate clean Linux system or virtual machine.
-
-### Linux — update an existing installation (recommended: software + desktop icon)
-
-Download and run the safe updater from a terminal logged in as your Linux desktop user:
-
-```bash
-curl -fL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_linux.sh -o update_linux.sh
+URL="https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_linux.sh"
+if command -v curl >/dev/null 2>&1; then
+  curl -fL "$URL" -o update_linux.sh
+elif command -v wget >/dev/null 2>&1; then
+  wget -O update_linux.sh "$URL"
+else
+  echo "Please install curl or wget to download the updater."
+  exit 1
+fi
 bash update_linux.sh
 ```
 
-This updates the Python package from `main` with `--no-deps` and **recreates or refreshes both the WASA-DEM desktop shortcut and its official icon**. It **does not remove or replace** your Conda environment, ASP installation, project folders, data, or customized notebooks. Updates to **package-managed notebooks** require an explicit opt-in after backing up custom edits: `bash update_linux.sh --refresh-notebooks`. Ordinary `pip install` does **not** create desktop shortcuts; use this updater instead. Desktop files are installed in `~/.local/share/applications`, with a copy on `~/Desktop` or `~/Bureau` when present; some desktops require **Allow Launching**. A desktop shortcut is not useful on a machine without a graphical desktop.
+The updater keeps your Python environment, dependencies, ASP installation, existing notebooks and research data. It refreshes the installed software and desktop shortcut; it does **not** overwrite customized notebooks. For optional notebook refreshes, back up custom edits first and run `bash update_linux.sh --refresh-notebooks`.
 
-**XFCE opens Emacs instead of JupyterLab:** This happens when a temporary HTML redirect is associated with Emacs instead of a browser. Refresh the launcher using `bash update_linux.sh`, or download and run `setup_linux_desktop.sh` alone. The launcher now uses `--ServerApp.use_redirect_file=False`, chooses Firefox/Chromium when available, and otherwise prints the Jupyter URL in the terminal. No changes to ASP or processing code are required.
-
-**XFCE / Debian desktop launch troubleshooting:** If the WASA-DEM icon exists but double-clicking reports **“Timeout was reached”**, use the recommended updater again to refresh the `.desktop` entry. It now disables freedesktop startup notification for the long-running JupyterLab server. If the timeout persists, launch `~/.local/bin/wasa-dem-launch` in a terminal to see the underlying Jupyter error, and verify that `~/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb` exists. Do not delete scientific environments or ASP to fix a desktop-launcher timeout.
-
-### Linux — manual package-only update (advanced)
-
-If you specifically want to update **only** the installed WASA-DEM Python package, with no automatic Linux icon/shortcut update, activate `pleiades_asp` and use:
-
-```bash
-python -m pip install --upgrade --force-reinstall --no-deps \
-  "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
-```
-
-This is **not the recommended general Linux update**, because `pip` does not run the desktop-shortcut setup. Use [the recommended Linux updater](#linux--update-an-existing-installation-recommended-software--desktop-icon) above for package **and** icon updates. Do not run `pleiades-workflow-init` as part of every routine update: it refreshes package-managed notebooks and may overwrite custom edits. After backing up custom notebooks, opt into that refresh with:
-
-```bash
-bash update_linux.sh --refresh-notebooks
-```
-
-If Python dependencies or ASP are missing or broken, use the [full Linux installation procedure](#linux--new-installation) instead of the lightweight updater.
+**Remote/headless Linux:** JupyterLab can run without a graphical browser on the server; open it from a browser on your own computer using the server URL, with SSH port forwarding if required. Desktop shortcuts are optional in this case. See [Linux desktop launcher troubleshooting](docs/linux-desktop-troubleshooting.md) for detailed diagnostics and safe reinstall procedures.
 
 ### Launch WASA-DEM
 
