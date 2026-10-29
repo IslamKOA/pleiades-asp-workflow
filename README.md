@@ -150,7 +150,7 @@ fi
 bash update_linux.sh
 ```
 
-The updater keeps your Python environment, dependencies, ASP installation, existing notebooks and research data. It refreshes the installed software and desktop shortcut; it does **not** overwrite customized notebooks. For optional notebook refreshes, back up custom edits first and run `bash update_linux.sh --refresh-notebooks`.
+The updater automatically detects existing `pleiades_asp` environments, including nonstandard Micromamba locations such as shared work directories; you do not need to activate Conda first. The updater keeps your Python environment, dependencies, ASP installation, existing notebooks and research data. It refreshes the installed software and desktop shortcut; it does **not** overwrite customized notebooks. For optional notebook refreshes, back up custom edits first and run `bash update_linux.sh --refresh-notebooks`.
 
 **Remote/headless Linux:** JupyterLab can run without a graphical browser on the server; open it from a browser on your own computer using the server URL, with SSH port forwarding if required. Desktop shortcuts are optional in this case. See [Linux desktop launcher troubleshooting](docs/linux-desktop-troubleshooting.md) for detailed diagnostics and safe reinstall procedures.
 
