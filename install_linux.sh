@@ -2,6 +2,11 @@
 # WASA-DEM Linux installer (no system Python or Git needed).
 # Reuses valid environments; never deletes projects or installed environments.
 set -euo pipefail
+# Conda's optional libmamba solver can be incompatible with the installed
+# libmambapy. Use the classic solver only for this installer, without changing
+# the user's persistent Conda configuration.
+export CONDA_NO_PLUGINS=true
+export CONDA_SOLVER=classic
 ENV_NAME="${WASA_DEM_ENV_NAME:-pleiades_asp}"
 ASP_VERSION="${PLEIADES_ASP_VERSION:-3.3.0}"
 WORKSPACE="${WASA_DEM_WORKSPACE:-$HOME/Pleiades_ASP_Workflow}"
@@ -98,6 +103,16 @@ if [[ -z "$selected" ]]; then
     "$selected" --version || fail "Micromamba cannot run on this Linux system."
 fi
 
+# Derive the environment path from the selected manager's environment listing.
+# Avoid parsing the noisy stdout of 'conda run' (broken solver plugins can print warnings).
+resolve_prefix() {
+  local result path
+  result="$("$selected" env list --json 2>/dev/null)" || return 1
+  path="$(printf '%s' "$result" | grep -oE '"[^"]*/envs/'"$ENV_NAME"'"' | head -n 1 | tr -d '"' || true)"
+  [[ -n "$path" && -x "$path/bin/python" ]] || return 1
+  printf '%s' "$path"
+}
+
 say "Using $selected_type: $selected"
 listing="$("$selected" env list --json)" || fail "Could not list environments using $selected."
 if ! printf '%s' "$listing" | grep -Eq "[/]$ENV_NAME\""; then
@@ -133,7 +148,7 @@ if [[ -d "$HOME/Desktop" || -d "$HOME/Bureau" || -n "${DISPLAY:-}" || -n "${WAYL
     desktop_helper="$(mktemp)"
     if download "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/setup_linux_desktop.sh" "$desktop_helper"; then
         # Resolve the Python interpreter from the existing managed environment.
-        python_path="$("$selected" run -n "$ENV_NAME" python -c 'import sys;print(sys.executable)')"
+        python_path="$(resolve_prefix)/bin/python"
         WASA_DEM_PYTHON="$python_path" WASA_DEM_WORKSPACE="$WORKSPACE" bash "$desktop_helper" \
             || say "Desktop shortcut setup failed; WASA-DEM itself is installed and usable."
     else
@@ -142,11 +157,10 @@ if [[ -d "$HOME/Desktop" || -d "$HOME/Bureau" || -n "${DISPLAY:-}" || -n "${WAYL
     rm -f "$desktop_helper"
 fi
 
-# Use the actual installed environment prefix, not a guessed Conda environment name.
-# This remains correct when Mamba is configured with an external /workdir root.
-resolved_python="$("$selected" run -n "$ENV_NAME" python -c 'import sys; print(sys.executable)' | tail -n 1)"
-[[ -x "$resolved_python" ]] || fail "Unable to locate installed environment Python."
-resolved_jupyter="$(dirname "$resolved_python")/jupyter"
+# Use the verified environment prefix instead of parsing 'mamba run' output.
+resolved_prefix="$(resolve_prefix)" || fail "Could not locate the newly installed environment using $selected. Inspect environment list rather than deleting it."
+resolved_python="$resolved_prefix/bin/python"
+resolved_jupyter="$resolved_prefix/bin/jupyter"
 [[ -x "$resolved_jupyter" ]] || fail "JupyterLab executable missing: $resolved_jupyter"
 
 say "Installation complete."
