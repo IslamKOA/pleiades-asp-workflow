@@ -10,8 +10,10 @@ printf -v exe_q '%q' "$jupyter"
 workspace="${WASA_DEM_WORKSPACE:-$HOME/Pleiades_ASP_Workflow}"
 notebook="$workspace/Pleiades_ASP_Workflow.ipynb"
 printf -v nb_q '%q' "$notebook"
+printf -v bin_q '%q' "$(dirname "$python_exe")"
 cat > "$HOME/.local/bin/wasa-dem" <<EOF
 #!/usr/bin/env bash
+export PATH=$bin_q:"\$PATH"
 exec $exe_q lab $nb_q "\$@"
 EOF
 chmod 755 "$HOME/.local/bin/wasa-dem"
