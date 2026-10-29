@@ -138,7 +138,7 @@ The installer checks Conda first, then Micromamba/Mamba; if no usable manager is
 
 ### Linux — Update
 
-**Update WASA-DEM and refresh its optional Linux desktop shortcut:**
+**Update WASA-DEM:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_linux.sh -o update_linux.sh && bash update_linux.sh
@@ -150,7 +150,7 @@ curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main
 wget -qO update_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_linux.sh && bash update_linux.sh
 ```
 
-The updater reuses the existing `pleiades_asp` environment and keeps ASP, scientific dependencies, research data, and customized notebooks unchanged. It refreshes the desktop shortcut only if a graphical browser is available. The update does not require Conda activation beforehand.
+The updater reuses the existing `pleiades_asp` environment and keeps ASP, scientific dependencies, research data, and customized notebooks unchanged. The update does not require Conda activation beforehand.
 
 ### Launch WASA-DEM
 
