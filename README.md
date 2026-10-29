@@ -164,11 +164,13 @@ conda run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_
 
 For Micromamba/Mamba, substitute the corresponding manager command.
 
-**Linux:** with the `pleiades_asp` environment active:
+**Linux:** start JupyterLab normally from the installed environment (the installer also prints the exact command):
 
 ```bash
-jupyter lab "$HOME/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb"
+~/miniconda3/envs/pleiades_asp/bin/jupyter lab "$HOME/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb"
 ```
+
+If a different Conda/Micromamba root was used, replace the executable path with the one printed by the installer. No `--no-browser` flag is required. In the notebook, select the **pleiades_asp** Python kernel if necessary; shell commands such as `!bundle_adjust` and `!point2las` require that kernel's `bin` directory on `PATH`.
 
 In JupyterLab, open `Pleiades_ASP_Workflow.ipynb` and click **▶ Start WASA-DEM**. The default `Pleiades_ASP_Workflow/` folder and Python package name remain unchanged for compatibility.
 
