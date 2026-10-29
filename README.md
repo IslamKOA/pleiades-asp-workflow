@@ -125,6 +125,8 @@ bash install_linux.sh
 
 If `curl` is missing, use `wget -O install_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh`, then run `bash install_linux.sh`.
 
+**Linux graphical desktop shortcut:** After a successful Linux installation in a graphical session, the installer creates a **WASA-DEM** application-menu entry and, if the Desktop directory exists, a **WASA-DEM.desktop** shortcut using the official logo. It opens the installed notebook in JupyterLab with the existing `pleiades_asp` environment. Some GNOME desktops require right-click → **Allow Launching**. Headless servers skip desktop integration; **a dedicated GPU is not required** for the shortcut.
+
 The installer detects an existing usable environment manager, reuses `pleiades_asp` or installs standalone Micromamba and Python 3.11 in the user account, installs WASA-DEM from a **GitHub ZIP archive** (not `git clone`), and installs/verifies ASP and initializes the notebook workspace.
 
 On restricted servers, system-level libraries required by the ASP binaries may need administrator assistance. Do **not** use `sudo` to create the Python environment.
