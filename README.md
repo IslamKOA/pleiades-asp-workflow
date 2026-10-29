@@ -131,6 +131,17 @@ The installer detects an existing usable environment manager, reuses `pleiades_a
 
 On restricted servers, system-level libraries required by the ASP binaries may need administrator assistance. Do **not** use `sudo` to create the Python environment.
 
+### Linux — refresh WASA-DEM and its desktop shortcut (recommended)
+
+Download and run the safe updater from a terminal logged in as your Linux desktop user:
+
+```bash
+curl -fL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_linux.sh -o update_linux.sh
+bash update_linux.sh
+```
+
+This updates the Python package from `main` with `--no-deps` and **recreates or refreshes both the WASA-DEM desktop shortcut and its official icon**. It **does not remove or replace** your Conda environment, ASP installation, project folders, data, or customized notebooks. Updates to **package-managed notebooks** require an explicit opt-in after backing up custom edits: `bash update_linux.sh --refresh-notebooks`. Ordinary `pip install` does **not** create desktop shortcuts; use this updater instead. Desktop files are installed in `~/.local/share/applications`, with a copy on `~/Desktop` or `~/Bureau` when present; some desktops require **Allow Launching**. A desktop shortcut is not useful on a machine without a graphical desktop.
+
 ### Linux — update an existing installation
 
 If the `pleiades_asp` environment and ASP are already working, activate that environment and update only the WASA-DEM software package:
