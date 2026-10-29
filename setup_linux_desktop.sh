@@ -38,7 +38,20 @@ printf -v notebook_q '%q' "$notebook"
 cat > "$launcher" <<EOF
 #!/usr/bin/env bash
 set -e
-exec $jupyter_q lab $notebook_q
+# Jupyter redirect HTML can be associated with Emacs on XFCE.
+# Open the actual HTTP URL directly, preferring an installed web browser.
+browser=""
+for candidate in firefox chromium chromium-browser google-chrome brave-browser epiphany; do
+  if command -v "\$candidate" >/dev/null 2>&1; then
+    browser="\$(command -v "\$candidate")"
+    break
+  fi
+done
+if [[ -n "\$browser" ]]; then
+  exec $jupyter_q lab --ServerApp.use_redirect_file=False --ServerApp.browser="\$browser" $notebook_q
+fi
+# Without a recognized browser, the server will print a tokenized URL to open manually.
+exec $jupyter_q lab --no-browser $notebook_q
 EOF
 chmod 755 "$launcher"
 icon_value="applications-science"
