@@ -7,9 +7,14 @@ jupyter="$(dirname "$python_exe")/jupyter"
 [[ -x "$jupyter" ]] || { echo "JupyterLab missing: $jupyter" >&2; exit 1; }
 mkdir -p "$HOME/.local/bin"
 printf -v exe_q '%q' "$jupyter"
+workspace="${WASA_DEM_WORKSPACE:-$HOME/Pleiades_ASP_Workflow}"
+notebook="$workspace/Pleiades_ASP_Workflow.ipynb"
+printf -v nb_q '%q' "$notebook"
+printf -v bin_q '%q' "$(dirname "$python_exe")"
 cat > "$HOME/.local/bin/wasa-dem" <<EOF
 #!/usr/bin/env bash
-exec $exe_q lab "\$@"
+export PATH=$bin_q:"\$PATH"
+exec $exe_q lab $nb_q "\$@"
 EOF
 chmod 755 "$HOME/.local/bin/wasa-dem"
 echo "[OK] WASA-DEM terminal launcher: $HOME/.local/bin/wasa-dem"
