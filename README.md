@@ -116,22 +116,25 @@ If you encountered `SyntaxError: '(' was never closed` during the old `Verify en
 
 ### Linux — Install
 
-Copy and run these commands on Linux:
+**Install WASA-DEM with NASA ASP 3.3.0 (default):**
 
 ```bash
-URL="https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh"
-if command -v curl >/dev/null 2>&1; then
-  curl -fL "$URL" -o install_linux.sh
-elif command -v wget >/dev/null 2>&1; then
-  wget -O install_linux.sh "$URL"
-else
-  echo "Please install curl or wget to download the installer."
-  exit 1
-fi
-bash install_linux.sh
+curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh -o install_linux.sh && PLEIADES_ASP_VERSION=3.3.0 bash install_linux.sh
 ```
 
-The installer checks **Conda first**, then **Micromamba/Mamba**; if no usable manager exists, it installs Micromamba automatically. It creates or reuses the `pleiades_asp` environment, installs WASA-DEM and ASP 3.3.0, and prints the **actual Jupyter executable** to launch. Git is not required: WASA-DEM is downloaded as a GitHub ZIP. The desktop icon is optional and created **only when a graphical session and a web browser are both available**. It preserves existing research notebooks and data by default. A **graphics card is not necessary**; to open JupyterLab on the Linux desktop, a web browser such as Firefox or Chromium must also be available.
+**Change the ASP version:** replace `3.3.0` with `3.4.0` or `3.5.0` in the command above. For example, to install ASP 3.5.0:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh -o install_linux.sh && PLEIADES_ASP_VERSION=3.5.0 bash install_linux.sh
+```
+
+**If `curl` is unavailable**, use `wget`:
+
+```bash
+wget -qO install_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh && PLEIADES_ASP_VERSION=3.3.0 bash install_linux.sh
+```
+
+The installer checks Conda first, then Micromamba/Mamba; if no usable manager is available, it installs Micromamba automatically. It creates or reuses `pleiades_asp`, downloads WASA-DEM from GitHub without requiring Git, and installs/verifies the selected ASP version. The optional `point2las` export uses a separate ASP 3.5.0 companion on first use when the main ASP is 3.3.0 or 3.4.0. The installer preserves research data and customized notebooks and prints the correct JupyterLab launch command. A desktop shortcut is created only when a graphical desktop and web browser are available (no dedicated GPU required).
 
 ### Linux — Update
 
