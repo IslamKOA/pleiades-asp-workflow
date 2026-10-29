@@ -15,6 +15,13 @@ MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-}"
 export MAMBA_ROOT_PREFIX
 
 say() { printf '\n[WASA-DEM] %s\n' "$*"; }
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  GREEN="$(printf '\033[32m')"
+  YELLOW="$(printf '\033[33m')"
+  RESET="$(printf '\033[0m')"
+else GREEN=""; YELLOW=""; RESET=""; fi
+ok() { printf '%s[OK]%s %s\n' "$GREEN" "$RESET" "$*"; }
+skip() { printf '%s[SKIP]%s %s\n' "$YELLOW" "$RESET" "$*"; }
 fail() { printf 'WASA-DEM installation error: %s\n' "$*" >&2; exit 1; }
 [[ "$(uname -s)" == "Linux" ]] || fail "This installer is for Linux. Use install_windows.ps1 on Windows."
 
@@ -113,23 +120,26 @@ resolve_prefix() {
   printf '%s' "$path"
 }
 
-say "Using $selected_type: $selected"
+ok "Environment manager: $selected_type ($selected)"
 listing="$("$selected" env list --json)" || fail "Could not list environments using $selected."
 if ! printf '%s' "$listing" | grep -Eq "[/]$ENV_NAME\""; then
     say "Creating isolated Python 3.11 environment $ENV_NAME."
     "$selected" create -y -n "$ENV_NAME" -c conda-forge python=3.11 pip
 else
-    say "Reusing existing $ENV_NAME environment."
+    ok "Existing $ENV_NAME environment found; skipping Python environment download."
 fi
 
 "$selected" run -n "$ENV_NAME" python -c \
   'import sys; print("WASA-DEM Python:", sys.executable, sys.version); assert sys.version_info >= (3, 10)' \
   || fail "Managed Python >=3.10 was not found; inspect the environment before updating."
+ok "Python environment verified."
 
-say "Installing WASA-DEM from a ZIP archive; Git is not required."
+say "Installing WASA-DEM from GitHub ZIP and checking dependencies (download progress shown below)."
 "$selected" run -n "$ENV_NAME" python -m pip install --upgrade "$SOURCE_URL"
-say "Installing/verifying NASA Ames Stereo Pipeline $ASP_VERSION."
+ok "WASA-DEM Python package installed."
+say "Installing/verifying NASA Ames Stereo Pipeline $ASP_VERSION (cached binaries may be reused)."
 "$selected" run -n "$ENV_NAME" asp-install "$ASP_VERSION"
+ok "ASP $ASP_VERSION installer check completed."
 if [[ ! -f "$WORKSPACE/Pleiades_ASP_Workflow.ipynb" ]]; then
     say "Initializing the new Jupyter workspace."
     "$selected" run -n "$ENV_NAME" pleiades-workflow-init "$WORKSPACE"
@@ -137,9 +147,10 @@ elif [[ "${WASA_DEM_REFRESH_NOTEBOOKS:-0}" == "1" ]]; then
     say "Explicitly refreshing package-managed notebooks; user edits may be overwritten."
     "$selected" run -n "$ENV_NAME" pleiades-workflow-init "$WORKSPACE"
 else
-    say "Preserving existing workspace and customized notebooks (set WASA_DEM_REFRESH_NOTEBOOKS=1 to refresh explicitly)."
+    skip "Existing notebooks preserved; no overwrite."
 fi
 [[ -f "$WORKSPACE/Pleiades_ASP_Workflow.ipynb" ]] || fail "Notebook not found in $WORKSPACE."
+ok "WASA-DEM notebook available."
 
 
 # Desktop integration is refreshed for both new installations and reinstalls.
@@ -163,7 +174,7 @@ resolved_python="$resolved_prefix/bin/python"
 resolved_jupyter="$resolved_prefix/bin/jupyter"
 [[ -x "$resolved_jupyter" ]] || fail "JupyterLab executable missing: $resolved_jupyter"
 
-say "Installation complete."
+ok "WASA-DEM installation complete. All required checks passed."
 say "Open WASA-DEM using this command (works without Conda activation):"
 printf '  %q lab --no-browser %q\n' "$resolved_jupyter" "$WORKSPACE/Pleiades_ASP_Workflow.ipynb"
 say "On Linux with a graphical browser, double-click WASA-DEM if a shortcut was created."
