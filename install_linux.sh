@@ -2,6 +2,11 @@
 # WASA-DEM Linux installer (no system Python or Git needed).
 # Reuses valid environments; never deletes projects or installed environments.
 set -euo pipefail
+# Conda's optional libmamba solver can be incompatible with the installed
+# libmambapy. Use the classic solver only for this installer, without changing
+# the user's persistent Conda configuration.
+export CONDA_NO_PLUGINS=true
+export CONDA_SOLVER=classic
 ENV_NAME="${WASA_DEM_ENV_NAME:-pleiades_asp}"
 ASP_VERSION="${PLEIADES_ASP_VERSION:-3.3.0}"
 WORKSPACE="${WASA_DEM_WORKSPACE:-$HOME/Pleiades_ASP_Workflow}"
