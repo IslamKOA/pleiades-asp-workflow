@@ -1,3 +1,9 @@
+## Unreleased — Clarify ASP 3.5.0 selection for optional LAZ export
+
+- Added a prominent explanation directly in the standalone LAZ export/point-density notebook: when the main ASP version is 3.3.0 or 3.4.0, WASA-DEM automatically uses a separately managed ASP 3.5.0 for `point2las` because the `--save-triangulation-error` option is not available in the older releases.
+- Clarified that only this optional LAZ export (and `asp-pdal` if available) uses the companion. The active stereo/DSM processing release is never changed.
+- Updated the main README and point-density README; added a documentation contract test. No processing algorithms, software versions, installation paths or scientific outputs were changed.
+
 # Changelog
 
 ## Unreleased — Official square logo without lower terrain
