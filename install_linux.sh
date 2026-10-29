@@ -175,7 +175,11 @@ resolved_jupyter="$resolved_prefix/bin/jupyter"
 [[ -x "$resolved_jupyter" ]] || fail "JupyterLab executable missing: $resolved_jupyter"
 
 ok "WASA-DEM installation complete. All required checks passed."
-say "Open WASA-DEM using this command (works without Conda activation):"
-printf '  %q lab %q\n' "$resolved_jupyter" "$WORKSPACE/Pleiades_ASP_Workflow.ipynb"
+say "To use WASA-DEM in this terminal, run:"
+printf '  conda activate %q\n' "$resolved_prefix"
+printf '  jupyter lab\n'
+say "Activation must be run in your terminal after the installer exits."
+say "Or launch directly without activating:"
+printf '  %q lab\n' "$resolved_jupyter"
 say "On Linux with a graphical browser, double-click WASA-DEM if a shortcut was created."
 say "If no local browser exists, Jupyter still starts; open its URL in a browser on a reachable computer."
