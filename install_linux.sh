@@ -174,12 +174,22 @@ resolved_python="$resolved_prefix/bin/python"
 resolved_jupyter="$resolved_prefix/bin/jupyter"
 [[ -x "$resolved_jupyter" ]] || fail "JupyterLab executable missing: $resolved_jupyter"
 
+launcher_helper="$(mktemp)"
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/setup_linux_command.sh -o "$launcher_helper"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$launcher_helper" https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/setup_linux_command.sh
+else
+  echo "WASA-DEM: curl or wget needed for launcher" >&2
+fi
+if [[ -s "$launcher_helper" ]]; then
+  WASA_DEM_PYTHON="$resolved_python" bash "$launcher_helper" || echo "WASA-DEM: Could not create terminal launcher."
+fi
+rm -f "$launcher_helper"
+
 ok "WASA-DEM installation complete. All required checks passed."
-say "To use WASA-DEM in this terminal, run:"
-printf '  conda activate %q\n' "$resolved_prefix"
-printf '  jupyter lab\n'
-say "Activation must be run in your terminal after the installer exits."
-say "Or launch directly without activating:"
-printf '  %q lab\n' "$resolved_jupyter"
+say "Launch WASA-DEM with:"
+printf '  %q\n' "$HOME/.local/bin/wasa-dem"
+say "No Conda activation or notebook path required."
 say "On Linux with a graphical browser, double-click WASA-DEM if a shortcut was created."
 say "If no local browser exists, Jupyter still starts; open its URL in a browser on a reachable computer."
