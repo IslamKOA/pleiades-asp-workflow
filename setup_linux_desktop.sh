@@ -54,7 +54,7 @@ Exec="$launcher"
 Icon=$icon_value
 Terminal=true
 Categories=Science;Education;Geography;
-StartupNotify=true
+StartupNotify=false
 EOF
 chmod 644 "$entry"
 desktop_dir=""
@@ -71,4 +71,5 @@ else
   echo "WASA-DEM: Desktop folder not detected; application-menu shortcut installed."
 fi
 echo "WASA-DEM: Application menu entry refreshed at $entry"
+echo "WASA-DEM: XFCE startup notification disabled to avoid launcher timeouts during Jupyter startup."
 echo "On some desktops: right-click icon > Allow Launching."
