@@ -32,7 +32,7 @@ add_manager() {
     manager_paths+=("$path")
     manager_types+=("$type")
 }
-for type in micromamba mamba conda; do
+for type in conda micromamba mamba; do
     if command -v "$type" >/dev/null 2>&1; then add_manager "$type" "$(command -v "$type")"; fi
 done
 [[ -n "${CONDA_EXE:-}" ]] && add_manager conda "$CONDA_EXE"
@@ -142,5 +142,15 @@ if [[ -d "$HOME/Desktop" || -d "$HOME/Bureau" || -n "${DISPLAY:-}" || -n "${WAYL
     rm -f "$desktop_helper"
 fi
 
-say "Installation complete. Launch the interface using:"
-printf '  %q run -n %q jupyter lab %q\n' "$selected" "$ENV_NAME" "$WORKSPACE/Pleiades_ASP_Workflow.ipynb"
+# Use the actual installed environment prefix, not a guessed Conda environment name.
+# This remains correct when Mamba is configured with an external /workdir root.
+resolved_python="$("$selected" run -n "$ENV_NAME" python -c 'import sys; print(sys.executable)' | tail -n 1)"
+[[ -x "$resolved_python" ]] || fail "Unable to locate installed environment Python."
+resolved_jupyter="$(dirname "$resolved_python")/jupyter"
+[[ -x "$resolved_jupyter" ]] || fail "JupyterLab executable missing: $resolved_jupyter"
+
+say "Installation complete."
+say "Open WASA-DEM using this command (works without Conda activation):"
+printf '  %q lab --no-browser %q\n' "$resolved_jupyter" "$WORKSPACE/Pleiades_ASP_Workflow.ipynb"
+say "On Linux with a graphical browser, double-click WASA-DEM if a shortcut was created."
+say "If no local browser exists, open the displayed Jupyter URL in another browser using a secure connection."
