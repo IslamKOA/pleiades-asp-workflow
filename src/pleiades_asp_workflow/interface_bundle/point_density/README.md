@@ -33,6 +33,8 @@ PDAL installation using `PDAL_BIN_DIR` or `USE_MICROMAMBA`. As an
 advanced override, `ASP_BIN_DIR` can select an external ASP 3.5+ bin folder.
 The notebook's `--save-triangulation-error` option requires ASP 3.5+.
 
+> **Why ASP 3.5.0 is selected automatically:** The `point2las` command in ASP 3.3.0 and 3.4.0 does not provide the `--save-triangulation-error` option needed to preserve per-point triangulation errors in the LAS/LAZ export. WASA-DEM therefore installs and reuses a **separate ASP 3.5.0 companion for this optional export only** when the main ASP version is 3.3.0 or 3.4.0. `bundle_adjust`, `parallel_stereo`, `point2dem`, and all existing DSM processing retain the chosen main ASP version. The first export/check may download the companion and requires internet access. If you override the default `point2las` tool path, the override must be ASP 3.5.0 or newer.
+
 `LAZ_OUTPUT_DIR_OVERRIDE=None` saves the exported LAZ files and CSV summaries
 in `<POINT_CLOUD_DIR>/laz`. Review the discovery preview before exporting.
 
