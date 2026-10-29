@@ -134,7 +134,7 @@ curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main
 wget -qO install_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh && PLEIADES_ASP_VERSION=3.3.0 bash install_linux.sh
 ```
 
-The installer checks Conda first, then Micromamba/Mamba; if no usable manager is available, it installs Micromamba automatically. It creates or reuses `pleiades_asp`, downloads WASA-DEM from GitHub without requiring Git, and installs/verifies the selected ASP version. The optional `point2las` export uses a separate ASP 3.5.0 companion on first use when the main ASP is 3.3.0 or 3.4.0. The installer preserves research data and customized notebooks and creates a simple `~/.local/bin/wasa-dem` launch command. A desktop shortcut is created only when a graphical desktop and web browser are available (no dedicated GPU required).
+The installer checks Conda first, then Micromamba/Mamba; if no usable manager is available, it installs Micromamba automatically. It creates or reuses `pleiades_asp`, downloads WASA-DEM from GitHub without requiring Git, and installs/verifies the selected ASP version. The optional `point2las` export uses a separate ASP 3.5.0 companion on first use when the main ASP is 3.3.0 or 3.4.0. The installer preserves research data and customized notebooks and creates a simple `~/.local/bin/wasa-dem` launch command.
 
 ### Linux — Update
 
