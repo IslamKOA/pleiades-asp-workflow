@@ -119,5 +119,62 @@ say "Refreshing the existing Jupyter workspace."
 "$selected" run -n "$ENV_NAME" pleiades-workflow-init "$WORKSPACE"
 [[ -f "$WORKSPACE/Pleiades_ASP_Workflow.ipynb" ]] || fail "Notebook not found in $WORKSPACE."
 
+
+# Optional graphical Linux shortcut; never required on headless/SSH installations.
+if [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
+    app_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    bin_dir="$HOME/.local/bin"
+    icon_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons"
+    mkdir -p "$app_dir" "$bin_dir" "$icon_dir"
+    icon_file="$icon_dir/wasa-dem.jpg"
+    if [[ ! -s "$icon_file" ]]; then
+        download "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/assets/WASA-DEM-official-logo.jpg" "$icon_file" \
+          || { rm -f "$icon_file"; say "Icon download failed; using a generic icon."; }
+    fi
+    launcher="$bin_dir/wasa-dem-launch"
+    printf -v manager_q '%q' "$selected"
+    printf -v env_q '%q' "$ENV_NAME"
+    printf -v notebook_q '%q' "$WORKSPACE/Pleiades_ASP_Workflow.ipynb"
+    printf -v root_q '%q' "$MAMBA_ROOT_PREFIX"
+    cat > "$launcher" <<EOF
+#!/usr/bin/env bash
+set -e
+export MAMBA_ROOT_PREFIX=$root_q
+exec $manager_q run -n $env_q jupyter lab $notebook_q
+EOF
+    chmod 755 "$launcher"
+    desktop_file="$app_dir/wasa-dem.desktop"
+    desktop_exec="${launcher//\\/\\\\}"
+    desktop_exec="${desktop_exec//\"/\\\"}"
+    icon_value="applications-science"
+    [[ -s "$icon_file" ]] && icon_value="$icon_file"
+    cat > "$desktop_file" <<EOF
+[Desktop Entry]
+Type=Application
+Name=WASA-DEM
+Comment=Satellite stereo DSM workflow with NASA ASP
+Exec="$desktop_exec"
+Icon=$icon_value
+Terminal=true
+Categories=Education;Science;Geography;
+StartupNotify=true
+EOF
+    chmod 644 "$desktop_file"
+    desktop_dir=""
+    if command -v xdg-user-dir >/dev/null 2>&1; then
+        desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+    fi
+    if [[ -z "$desktop_dir" || "$desktop_dir" == "$HOME" ]]; then
+        [[ -d "$HOME/Desktop" ]] && desktop_dir="$HOME/Desktop"
+    fi
+    if [[ -n "$desktop_dir" && -d "$desktop_dir" ]]; then
+        cp "$desktop_file" "$desktop_dir/WASA-DEM.desktop"
+        chmod +x "$desktop_dir/WASA-DEM.desktop"
+        say "Desktop shortcut: $desktop_dir/WASA-DEM.desktop"
+    fi
+    say "Linux application launcher: $desktop_file"
+    say "Some desktops require right-click > Allow Launching before first use."
+fi
+
 say "Installation complete. Launch the interface using:"
 printf '  %q run -n %q jupyter lab %q\n' "$selected" "$ENV_NAME" "$WORKSPACE/Pleiades_ASP_Workflow.ipynb"
