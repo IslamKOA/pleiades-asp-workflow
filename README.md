@@ -131,7 +131,7 @@ fi
 bash install_linux.sh
 ```
 
-The installer detects an existing Conda/Micromamba installation or sets up Micromamba, prepares the `pleiades_asp` environment, installs WASA-DEM and NASA ASP 3.3.0, and creates or refreshes the Linux desktop icon **only when a graphical session and a web browser are both available**. It preserves existing research notebooks and data by default. A **graphics card is not necessary**; to open JupyterLab on the Linux desktop, a web browser such as Firefox or Chromium must also be available.
+The installer checks **Conda first**, then **Micromamba/Mamba**; if no usable manager exists, it installs Micromamba automatically. It creates or reuses the `pleiades_asp` environment, installs WASA-DEM and ASP 3.3.0, and prints the **actual Jupyter executable** to launch. Git is not required: WASA-DEM is downloaded as a GitHub ZIP. The desktop icon is optional and created **only when a graphical session and a web browser are both available**. It preserves existing research notebooks and data by default. A **graphics card is not necessary**; to open JupyterLab on the Linux desktop, a web browser such as Firefox or Chromium must also be available.
 
 ### Linux — Update
 
