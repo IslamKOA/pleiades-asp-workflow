@@ -168,9 +168,50 @@ For Micromamba/Mamba, substitute the corresponding manager command.
 ~/.local/bin/wasa-dem
 ```
 
-The installer and updater automatically create or refresh this terminal launcher using the correct `pleiades_asp` environment. It sets JupyterLab's startup URL to `/lab/tree/Pleiades_ASP_Workflow.ipynb` inside the workspace, rather than opening the generic Launcher page, and includes the environment commands in `PATH`. If there is no local web browser, open the Jupyter URL from a browser that can reach your server.
+The installer and updater automatically create or refresh this terminal launcher using the correct `pleiades_asp` environment. It passes `Pleiades_ASP_Workflow.ipynb` directly to JupyterLab (the original Linux notebook-opening method), sets the workspace root and the `/lab/tree/Pleiades_ASP_Workflow.ipynb` fallback URL, and adds the environment commands to `PATH`. No Linux desktop icon or shortcut is needed. The logo in this README is only for project identification. If there is no local web browser, open the Jupyter URL from a browser that can reach your server.
 
 In JupyterLab, open `Pleiades_ASP_Workflow.ipynb` and click **▶ Start WASA-DEM**. The default `Pleiades_ASP_Workflow/` folder and Python package name remain unchanged for compatibility.
+
+### Linux — clean installation test (optional)
+
+**Only use this procedure if you want to remove WASA-DEM from your Linux user account and test a new installation.** Stop running JupyterLab sessions first (in their terminals press `Ctrl+C`; do not stop unrelated users' servers). A normal update does **not** need these cleanup steps.
+
+1. Check the existing installations and confirm the selected environment belongs to WASA-DEM:
+
+```bash
+conda env list
+ls -ld "$HOME/Pleiades_ASP_Workflow" "$HOME/.local/bin/wasa-dem" 2>/dev/null || true
+```
+
+2. If the dedicated `pleiades_asp` environment belongs exclusively to WASA-DEM, remove **only that environment** with the manager that owns it:
+
+```bash
+conda env remove -n pleiades_asp
+```
+
+If you installed it through Micromamba instead, use `micromamba env remove -n pleiades_asp`. If the environment is shared, do not delete it.
+
+3. Remove **only the Linux WASA-DEM command**:
+
+```bash
+rm -f "$HOME/.local/bin/wasa-dem"
+```
+
+4. **Keep your existing workspace, source imagery, processed data, and ASP downloads.** The installer detects an existing notebook and preserves it. If you also require a completely new *notebook workspace* for testing, first rename the old workspace as a backup, rather than deleting it:
+
+```bash
+mv "$HOME/Pleiades_ASP_Workflow" "$HOME/Pleiades_ASP_Workflow.backup-$(date +%Y%m%d-%H%M%S)"
+```
+
+Only run the `mv` command if that original directory exists and there is sufficient disk space. The backup may contain important research files and should be retained until the test is complete. This does not remove installed ASP binaries.
+
+5. Run the [Linux Install](#linux--install) command above. Then start the application with:
+
+```bash
+~/.local/bin/wasa-dem
+```
+
+The expected notebook URL is `/lab/tree/Pleiades_ASP_Workflow.ipynb`. If an old JupyterLab browser tab is still open at `/lab`, close that tab and use the URL printed by the **new** JupyterLab process. On a remote server, use an appropriate SSH tunnel; a server's `127.0.0.1` address is not automatically reachable from another computer.
 
 ### Verify the installation
 
