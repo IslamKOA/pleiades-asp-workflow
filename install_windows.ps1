@@ -148,7 +148,11 @@ function Invoke-EnvironmentCommand([string[]]$Arguments, [string]$Action) {
 
 function Find-UsableWslDistro {
     if (-not (Get-Command wsl.exe -CommandType Application -ErrorAction SilentlyContinue)) { return $null }
-    $raw = & wsl.exe --list --quiet 2>$null
+    # A present wsl.exe does not mean the optional Windows feature is installed.
+    # Run discovery through cmd.exe to suppress the Windows "WSL is not installed"
+    # message safely (PowerShell 5.1 can treat native stderr as a terminating
+    # NativeCommandError when ErrorActionPreference is Stop).
+    $raw = & $env:ComSpec /d /c 'wsl.exe --list --quiet 2>nul'
     if ($LASTEXITCODE -ne 0) { return $null }
     $names = @($raw | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object {
         $_ -and $_ -notlike 'docker-desktop*'
@@ -250,11 +254,20 @@ try {
         Write-Host 'Once you see a Linux prompt (for example user@computer:$), type exit.' -ForegroundColor Yellow
         Write-Host 'The Windows installer will then continue automatically to ASP installation.' -ForegroundColor Yellow
         Write-Host ''
-        & wsl.exe --install -d Ubuntu
-        $wslInstallExit = $LASTEXITCODE
+        # WSL setup may print nonfatal status to stderr, or request elevation/
+        # a reboot. Do not let PowerShell's Stop preference turn native stderr
+        # into an unhandled exception before we can give recovery instructions.
+        $previousErrorAction = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & wsl.exe --install -d Ubuntu
+            $wslInstallExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
         $distro = Find-UsableWslDistro
         if (-not $distro) {
-            throw 'Ubuntu setup has not completed. If a Windows restart is required, restart and run this installer again.'
+            throw 'WSL/Ubuntu setup is not ready yet. If Windows requires administrator approval or a restart, complete that step, open Ubuntu once to finish first-time initialization, and then rerun install_windows_first_time.ps1. Your WASA-DEM Python environment is already installed and will be reused.'
         }
         if ($wslInstallExit -ne 0) {
             Write-Warning "Ubuntu installer returned $wslInstallExit, but '$distro' is now registered; checking usability."
