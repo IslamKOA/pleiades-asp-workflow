@@ -72,7 +72,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$HOME\Downloads\install_windows.ps1"
 ```
 
-This is the **one standard command sequence** for installing WASA-DEM. It installs or reuses the `pleiades_asp` Python environment, installs the workflow and JupyterLab, checks or sets up WSL/Ubuntu for NASA ASP processing, and creates the Windows desktop shortcut. WSL setup may require administrator approval, Ubuntu first-run initialization, or a Windows restart; rerun the same installer afterward if necessary. The optional `install_windows_first_time.ps1` helper calls this same installer; **do not run both**.
+This is the **one standard command sequence** for installing WASA-DEM. It installs or reuses the `pleiades_asp` Python environment, installs the workflow and JupyterLab, checks or sets up WSL/Ubuntu for NASA ASP processing, and creates the Windows desktop shortcut. The installer requests Ubuntu with WSL's `--no-launch` option and performs a non-interactive first-run check, so it does not require users to type `exit` or set a Linux password merely to continue. Windows may still require administrator approval or a restart; rerun the same installer after restarting if requested. A personal Ubuntu user account is not automatically created. The optional `install_windows_first_time.ps1` helper calls this same installer; **do not run both**.
 
 ### Windows — update an existing installation
 
