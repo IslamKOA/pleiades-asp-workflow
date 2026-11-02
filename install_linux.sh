@@ -138,7 +138,11 @@ say "Installing WASA-DEM from GitHub ZIP and checking dependencies (download pro
 "$selected" run -n "$ENV_NAME" python -m pip install --upgrade "$SOURCE_URL"
 ok "WASA-DEM Python package installed."
 say "Installing/verifying NASA Ames Stereo Pipeline $ASP_VERSION (cached binaries may be reused)."
-"$selected" run -n "$ENV_NAME" asp-install "$ASP_VERSION"
+# Invoke the environment executable directly so ASP download progress
+# (percentage / transferred MiB) reaches the terminal without Conda run buffering.
+asp_executable="$(resolve_prefix)/bin/asp-install"
+[[ -x "$asp_executable" ]] || fail "ASP installer command missing: $asp_executable"
+PYTHONUNBUFFERED=1 "$asp_executable" "$ASP_VERSION"
 ok "ASP $ASP_VERSION installer check completed."
 if [[ ! -f "$WORKSPACE/Pleiades_ASP_Workflow.ipynb" ]]; then
     say "Initializing the new Jupyter workspace."
