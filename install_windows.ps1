@@ -267,7 +267,7 @@ try {
         }
         $distro = Find-UsableWslDistro
         if (-not $distro) {
-            throw 'WSL/Ubuntu setup is not ready yet. If Windows requires administrator approval or a restart, complete that step, open Ubuntu once to finish first-time initialization, and then rerun install_windows_first_time.ps1. Your WASA-DEM Python environment is already installed and will be reused.'
+            throw 'WSL features were installed, but Ubuntu is not ready until Windows is restarted. Restart Windows, open Ubuntu once to complete first-run setup, then rerun the same install_windows.ps1 command from the README. Your WASA-DEM Python environment will be reused; do not delete it.'
         }
         if ($wslInstallExit -ne 0) {
             Write-Warning "Ubuntu installer returned $wslInstallExit, but '$distro' is now registered; checking usability."
