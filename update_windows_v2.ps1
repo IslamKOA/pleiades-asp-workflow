@@ -1,6 +1,6 @@
 # WASA-DEM - lightweight Windows update (existing installation only)
-# Updates package code only; preserves environments, dependencies, ASP, WSL,
-# existing notebooks, shortcuts, settings, and research data.
+# Updates package code and managed workspace resources; preserves environments,
+# dependencies, ASP, WSL, research data, and project outputs.
 $ErrorActionPreference = 'Stop'
 $EnvironmentName = 'pleiades_asp'
 $PackageUrl = 'https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip'
@@ -73,7 +73,32 @@ if ($LASTEXITCODE -ne 0) { throw 'WASA-DEM Python package update failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Updated WASA-DEM package failed its import check.' }
 Write-Host '[OK] Python import verification passed.'
 
+# Refresh packaged notebooks and interface resources, including the logo.
+# Back up existing managed notebooks before replacing them.
+$workspace = Join-Path $HOME 'Pleiades_ASP_Workflow'
+if (Test-Path -LiteralPath $workspace -PathType Container) {
+    $backupRoot = Join-Path $workspace ('notebook_backups\before-update-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    foreach ($relative in @(
+        'Pleiades_ASP_Workflow.ipynb',
+        'coregistration\Coregistration_Process-Final-withPlannimetric.ipynb',
+        'point_density\08_Optional_LAZ_Export_and_Point_Density.ipynb'
+    )) {
+        $oldFile = Join-Path $workspace $relative
+        if (Test-Path -LiteralPath $oldFile -PathType Leaf) {
+            $backupFile = Join-Path $backupRoot $relative
+            New-Item -ItemType Directory -Path (Split-Path $backupFile -Parent) -Force | Out-Null
+            Copy-Item -LiteralPath $oldFile -Destination $backupFile -Force
+        }
+    }
+    Write-Host "Previous notebooks backed up to: $backupRoot"
+}
+$initializer = Join-Path (Split-Path $python -Parent) 'Scripts\pleiades-workflow-init.exe'
+if (-not (Test-Path -LiteralPath $initializer -PathType Leaf)) {
+    throw "Workspace initializer not found: $initializer"
+}
+& $initializer
+if ($LASTEXITCODE -ne 0) { throw 'WASA-DEM notebook/workspace refresh failed.' }
+Write-Host '[OK] Package-managed notebooks and interface resources refreshed.'
 Write-Host '[OK] WASA-DEM Python package updated.' -ForegroundColor Green
-Write-Host 'Existing notebooks and project files were not modified.'
 Write-Host 'Dependencies, ASP, WSL, Conda environment, and desktop shortcut were left unchanged.'
 Write-Host 'Restart JupyterLab to use the updated package.'
