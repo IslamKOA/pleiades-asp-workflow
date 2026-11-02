@@ -80,11 +80,11 @@ This is the **one standard command sequence** for installing WASA-DEM. It instal
 
 ```powershell
 Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_windows.ps1" `
-  -OutFile "$HOME\Downloads\update_windows.ps1"
+  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_windows_v2.ps1" `
+  -OutFile "$HOME\Downloads\update_windows_v2.ps1"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File "$HOME\Downloads\update_windows.ps1"
+  -File "$HOME\Downloads\update_windows_v2.ps1"
 ```
 
 This updates **only the WASA-DEM Python package** in the existing `pleiades_asp` environment. It **does not** reinstall dependencies, change ASP/WSL, re-create the environment, replace workspace notebooks, modify project data, or refresh the desktop shortcut. Restart JupyterLab after updating.
