@@ -148,7 +148,10 @@ ok "ASP $ASP_VERSION installer check completed."
 # This does not change the selected main ASP version.
 if [[ "$ASP_VERSION" != "3.5.0" ]]; then
     say "Installing/verifying optional ASP 3.5.0 companion for point2las/LAZ."
-    PYTHONUNBUFFERED=1 "$asp_executable" 3.5.0
+    # Call install_asp directly: asp-install would also switch the active
+    # scientific workflow version, which must remain $ASP_VERSION.
+    asp_python="$(resolve_prefix)/bin/python"
+    PYTHONUNBUFFERED=1 "$asp_python" -c 'from pleiades_asp_runner.installer import install_asp; install_asp(version="3.5.0")'
     ok "ASP 3.5.0 point2las companion installation completed."
 fi
 if [[ ! -f "$WORKSPACE/Pleiades_ASP_Workflow.ipynb" ]]; then
