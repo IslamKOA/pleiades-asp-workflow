@@ -144,6 +144,13 @@ asp_executable="$(resolve_prefix)/bin/asp-install"
 [[ -x "$asp_executable" ]] || fail "ASP installer command missing: $asp_executable"
 PYTHONUNBUFFERED=1 "$asp_executable" "$ASP_VERSION"
 ok "ASP $ASP_VERSION installer check completed."
+# Preinstall the isolated ASP 3.5.0 companion used by point2las/LAZ.
+# This does not change the selected main ASP version.
+if [[ "$ASP_VERSION" != "3.5.0" ]]; then
+    say "Installing/verifying optional ASP 3.5.0 companion for point2las/LAZ."
+    PYTHONUNBUFFERED=1 "$asp_executable" 3.5.0
+    ok "ASP 3.5.0 point2las companion installation completed."
+fi
 if [[ ! -f "$WORKSPACE/Pleiades_ASP_Workflow.ipynb" ]]; then
     say "Initializing the new Jupyter workspace."
     "$selected" run -n "$ENV_NAME" pleiades-workflow-init "$WORKSPACE"
