@@ -67,8 +67,11 @@ Write-Host 'Updating WASA-DEM package only (no dependency resolution, no ASP/WSL
 & $python -m pip install --upgrade --force-reinstall --no-deps $PackageUrl
 if ($LASTEXITCODE -ne 0) { throw 'WASA-DEM Python package update failed.' }
 
-& $python -c 'import pleiades_asp_workflow, pleiades_asp_workflow.interface_bundle.asp_utils2; print("WASA-DEM import check passed.")'
+# Avoid nested Python string quotes: Windows PowerShell 5.1 can strip them
+# when forwarding native-command arguments.
+& $python -c 'import pleiades_asp_workflow; import pleiades_asp_workflow.interface_bundle.asp_utils2'
 if ($LASTEXITCODE -ne 0) { throw 'Updated WASA-DEM package failed its import check.' }
+Write-Host '[OK] Python import verification passed.'
 
 Write-Host '[OK] WASA-DEM Python package updated.' -ForegroundColor Green
 Write-Host 'Existing notebooks and project files were not modified.'
