@@ -194,9 +194,18 @@ Run these **inside the `pleiades_asp` environment** (for example after `conda ac
 ```bash
 python --version
 pleiades-workflow-info
-asp-version
-asp-doctor
+asp-version             # active main ASP release (3.3.0 by default)
+asp-doctor              # checks the main ASP runtime
 ```
+
+**Optional ASP 3.5.0 companion check (LAZ export):** WASA-DEM can use **ASP 3.3.0 for stereo/DSM processing** alongside **ASP 3.5.0 for `point2las`** within the same Python environment. The ASP 3.5.0 companion is installed separately **on first use**, not during the standard installation. To download it if needed and verify the LAS tool, run:
+
+```bash
+point2las --version
+point2las --help
+```
+
+These commands may trigger an ASP 3.5.0 download and require an internet connection. `asp-version` will still report **3.3.0**, because the main workflow version is unchanged; the optional companion does not replace it.
 
 A functional launch of the Jupyter interface and a successful ASP environment check are stronger evidence than the presence of a desktop shortcut alone. If a verification command fails, keep the error log and troubleshoot it before running processing jobs.
 
