@@ -18,7 +18,7 @@ export PATH=$bin_q:"\$PATH"
 # Matches the verified remote-server launch: separate port, no browser on server,
 # and the notebook URL explicitly configured for Jupyter Server and JupyterLab.
 # Override the port if required: WASA_DEM_PORT=8891 ~/.local/bin/wasa-dem
-port="${WASA_DEM_PORT:-8890}"
+port="\${WASA_DEM_PORT:-8890}"
 case "\$port" in
   *[!0-9]*|"") echo "WASA-DEM: invalid WASA_DEM_PORT: \$port" >&2; exit 2 ;;
 esac
