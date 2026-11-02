@@ -15,7 +15,14 @@ printf -v bin_q '%q' "$(dirname "$python_exe")"
 cat > "$HOME/.local/bin/wasa-dem" <<EOF
 #!/usr/bin/env bash
 export PATH=$bin_q:"\$PATH"
-exec $exe_q lab --ServerApp.root_dir=$workspace_q --ServerApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb --LabApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb "\$@"
+# Matches the verified remote-server launch: separate port, no browser on server,
+# and the notebook URL explicitly configured for Jupyter Server and JupyterLab.
+# Override the port if required: WASA_DEM_PORT=8891 ~/.local/bin/wasa-dem
+port="${WASA_DEM_PORT:-8890}"
+case "\$port" in
+  *[!0-9]*|"") echo "WASA-DEM: invalid WASA_DEM_PORT: \$port" >&2; exit 2 ;;
+esac
+exec $exe_q lab --no-browser --port="\$port" --ServerApp.root_dir=$workspace_q --ServerApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb --LabApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb "\$@"
 EOF
 chmod 755 "$HOME/.local/bin/wasa-dem"
 if ! grep -Fq -- "--LabApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb" "$HOME/.local/bin/wasa-dem"; then
