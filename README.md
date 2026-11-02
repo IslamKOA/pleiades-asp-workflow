@@ -211,6 +211,12 @@ A functional launch of the Jupyter interface and a successful ASP environment ch
 
 ---
 
+## Questions, troubleshooting, and support
+
+Need help installing or running WASA-DEM? Use **[GitHub Discussions](https://github.com/IslamKOA/pleiades-asp-workflow/discussions)** to ask questions, describe installation problems, or share solutions with other users. For a reproducible software bug or a feature request, **[open a GitHub Issue](https://github.com/IslamKOA/pleiades-asp-workflow/issues/new/choose)** instead.
+
+When asking for help, include your operating system and version, WASA-DEM version, selected ASP version, the command you ran, and the relevant error output (remove passwords, access tokens, and private paths/data before posting). You can run `pleiades-workflow-info` and `asp-doctor` inside the `pleiades_asp` environment to collect useful diagnostics.
+
 ### ASP documentation
 
 The scientific processing engine used by this workflow is the NASA Ames Stereo Pipeline. For ASP command definitions, camera models, stereo sessions, and detailed processing behavior, consult the official documentation:
