@@ -127,7 +127,7 @@ curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main
 wget -qO update_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_linux.sh && bash update_linux.sh
 ```
 
-The updater reuses the existing `pleiades_asp` environment and keeps ASP, scientific dependencies, research data, and customized notebooks unchanged. The update does not require Conda activation beforehand.
+The updater reuses the existing `pleiades_asp` environment without reinstalling ASP or scientific dependencies. It updates the WASA-DEM Python package **and refreshes package-managed notebooks and workspace Python resources automatically**, including interface/logo changes. Previous main, co-registration, and point-density notebooks are backed up under `Pleiades_ASP_Workflow/notebook_backups/` before replacement. Research datasets and project outputs are preserved; customized managed files are replaced, so use their backups if needed. No Conda activation is required beforehand.
 
 ### Launch WASA-DEM
 
