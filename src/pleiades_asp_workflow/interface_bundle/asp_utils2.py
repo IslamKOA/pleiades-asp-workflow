@@ -12757,7 +12757,12 @@ class FullProjectSetupUI(ProjectSetupUI):
         from IPython.display import Javascript, display
 
         try:
-            settings = self._build_settings()
+            # Co-registration is independent: project inputs are optional.
+            # Keep the existing handoff when valid main-workflow settings exist.
+            try:
+                settings = self._build_settings()
+            except ValueError:
+                settings = None
             template = (
                 Path(__file__).resolve().parent
                 / "coregistration"
@@ -12766,44 +12771,51 @@ class FullProjectSetupUI(ProjectSetupUI):
             if not template.is_file():
                 raise FileNotFoundError(f"Co-registration notebook not found:\n{template}")
 
-            final_csv = settings.metadata_dir / "final_dsm_products.csv"
-            final_dsms = []
-            if final_csv.is_file():
-                try:
-                    df = pd.read_csv(final_csv)
-                    if "DSM" in df.columns:
-                        final_dsms = [str(v) for v in df["DSM"].dropna().tolist()]
-                except Exception:
-                    final_dsms = []
+            handoff = None
+            if settings is not None:
+                final_csv = settings.metadata_dir / "final_dsm_products.csv"
+                final_dsms = []
+                if final_csv.is_file():
+                    try:
+                        df = pd.read_csv(final_csv)
+                        if "DSM" in df.columns:
+                            final_dsms = [str(v) for v in df["DSM"].dropna().tolist()]
+                    except Exception:
+                        final_dsms = []
 
-            handoff = settings.project_dir / "coregistration_handoff.json"
-            handoff.write_text(
-                json.dumps(
-                    {
-                        "project_name": settings.project_name,
-                        "project_dir": str(settings.project_dir),
-                        "final_dsm_products_csv": str(final_csv) if final_csv.is_file() else "",
-                        "final_dsms": final_dsms,
-                        "alignment_reference_dem": self.alignment_dem.value.strip(),
-                        "map_projection_dem": self.mapproject_dem.value.strip(),
-                        "note": (
-                            "Optional xDEM co-registration is outside ASP. Configure the stable-area "
-                            "and reference-DEM inputs in the co-registration notebook before running it."
-                        ),
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
+                handoff = settings.project_dir / "coregistration_handoff.json"
+                handoff.write_text(
+                    json.dumps(
+                        {
+                            "project_name": settings.project_name,
+                            "project_dir": str(settings.project_dir),
+                            "final_dsm_products_csv": str(final_csv) if final_csv.is_file() else "",
+                            "final_dsms": final_dsms,
+                            "alignment_reference_dem": self.alignment_dem.value.strip(),
+                            "map_projection_dem": self.mapproject_dem.value.strip(),
+                            "note": (
+                                "Optional xDEM co-registration is outside ASP. Configure the stable-area "
+                                "and reference-DEM inputs in the co-registration notebook before running it."
+                            ),
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+
+            handoff_status = (
+                f"<b>Project handoff:</b> <code>{html.escape(str(handoff))}</code><br>"
+                if handoff is not None
+                else "No main-workflow project selected; configure the co-registration notebook inputs manually.<br>"
             )
-
             self.coregistration_status.value = (
                 "<div style='margin:7px 0;padding:9px 11px;border-left:4px solid #6a3d9a;"
                 "background:#f7f2fb;color:#444;font-size:12px;line-height:1.5;'>"
-                "<b>✓ Co-registration handoff prepared.</b><br>"
+                "<b>Co-registration notebook ready.</b><br>"
                 f"<b>Notebook:</b> <code>{html.escape(str(template))}</code><br>"
-                f"<b>Project handoff:</b> <code>{html.escape(str(handoff))}</code><br>"
-                "The notebook opens separately because co-registration is an optional post-processing "
-                "step outside ASP. Review its INPUTS cell before execution."
+                + handoff_status
+                + "The notebook opens separately and does not execute processing. "
+                "Review its INPUTS cell before execution."
                 "</div>"
             )
 
