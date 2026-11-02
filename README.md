@@ -168,9 +168,9 @@ For Micromamba/Mamba, substitute the corresponding manager command.
 ~/.local/bin/wasa-dem
 ```
 
-The installer and updater automatically create or refresh this terminal launcher using the correct `pleiades_asp` environment. It configures both Jupyter Server and JupyterLab startup URLs to `/lab/tree/Pleiades_ASP_Workflow.ipynb`, sets the workspace root, and adds the environment commands to `PATH`. An already open browser tab at `/lab` must be navigated to the notebook URL manually, since a new launcher cannot redirect an existing tab. No Linux desktop icon or shortcut is needed. The logo in this README is only for project identification. If there is no local web browser, open the Jupyter URL from a browser that can reach your server.
+The installer and updater automatically create or refresh this terminal launcher using the correct `pleiades_asp` environment. The Linux command now reproduces the remote-server launch verified on `ige-calcul4`: `jupyter lab --no-browser --port=8890`, with the workspace root and both Jupyter Server and JupyterLab startup URLs targeting `/lab/tree/Pleiades_ASP_Workflow.ipynb`. **Port 8890 is the default, not mandatory**: use `WASA_DEM_PORT=8891 ~/.local/bin/wasa-dem` for a different port. Jupyter prints the notebook URL (and authentication token) in the terminal; because `--no-browser` is used for remote systems, open that URL in your local browser through an SSH tunnel for the chosen port. An already open tab at `/lab` is not redirected automatically. No Linux desktop icon or shortcut is needed. The logo in this README is only for project identification.
 
-In JupyterLab, open `Pleiades_ASP_Workflow.ipynb` and click **▶ Start WASA-DEM**. The default `Pleiades_ASP_Workflow/` folder and Python package name remain unchanged for compatibility.
+Once the notebook opens in JupyterLab, click **▶ Start WASA-DEM**. The default `Pleiades_ASP_Workflow/` folder and Python package name remain unchanged for compatibility.
 
 ### Linux — clean installation test (optional)
 
