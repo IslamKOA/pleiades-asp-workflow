@@ -39,6 +39,7 @@ For reproducibility of the associated study, the reference processing version is
   - camera-transform propagation
   - `mapproject`
 - Point-cloud reconstruction and final DSM generation.
+- Optional `point2las` point-cloud export to LAS/LAZ and point-density analysis in a separate notebook.
 - Optional co-registration in a separate xDEM notebook.
 - Runtime summaries and Run / Pause / Resume / Stop controls for long processes.
 - Original scientific notebooks retained under `original_notebooks/` for traceability.
@@ -48,6 +49,8 @@ For reproducibility of the associated study, the reference processing version is
 **Choose your operating system and task:** [Windows — new installation](#windows--new-installation) · [Windows — update](#windows--update-an-existing-installation) · [Linux — Install](#linux--install) · [Linux — Update](#linux--update)
 
 The recommended installers support Python **3.10+** (Python 3.11 for a new environment), prefer an existing usable **Conda/Mamba/Micromamba** installation, and can download standalone Micromamba if none is available. **Git and a separately installed system Python are not required.** Internet connectivity is needed for initial downloads.
+
+**ASP versions:** ASP **3.3.0** is the default for stereo processing and DSM generation; ASP **3.5.0** provides the separate `point2las`/LAZ export tools. The Linux installer prepares both automatically, without changing the active main version.
 
 ### Before any update
 
@@ -112,7 +115,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 If you encountered `SyntaxError: '(' was never closed` during the old `Verify environment Python` step, download the **latest** installer again: the Windows Conda quoting bug has been corrected. Do not remove the existing Python environment.
 
-**ASP version:** ASP **3.3.0** is the scientific reference and default. To request a different main ASP version in the full installer, set `$env:PLEIADES_ASP_VERSION = "3.4.0"` before launching it. The optional `point2las` export uses an isolated ASP 3.5.0 companion when the selected main version is older than 3.5.0.
+**ASP version:** To request a different main ASP version in the Windows full installer, set `$env:PLEIADES_ASP_VERSION = "3.4.0"` before launching it. The optional LAS/LAZ tools remain separate.
 
 ### Linux — Install
 
@@ -134,7 +137,7 @@ curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main
 wget -qO install_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh && PLEIADES_ASP_VERSION=3.3.0 bash install_linux.sh
 ```
 
-The installer checks Conda first, then Micromamba/Mamba; if no usable manager is available, it installs Micromamba automatically. The Linux ASP install step streams its download progress directly (percentage and transferred MiB when the server reports file size); if the ASP archive is already cached, the download is skipped. Conda/Python package installation output is managed by their own installers. It creates or reuses `pleiades_asp`, downloads WASA-DEM from GitHub without requiring Git, and installs/verifies the selected ASP version. The Linux installer also downloads and verifies the separate ASP 3.5.0 companion for optional `point2las`/LAZ export, without changing the selected main ASP release. Therefore, a first LAZ export should not trigger another ASP download after a successful full Linux installation. The installer preserves research data and customized notebooks and creates a simple `~/.local/bin/wasa-dem` launch command.
+The installer uses Conda/Mamba/Micromamba (installing Micromamba if necessary), creates or reuses `pleiades_asp`, downloads the required ASP releases with visible progress, and sets up the `wasa-dem` launcher. Existing research data and customized notebooks are preserved.
 
 ### Linux — Update
 
@@ -191,23 +194,16 @@ Once the notebook opens in JupyterLab, click **▶ Start WASA-DEM**. The default
 
 Run these **inside the `pleiades_asp` environment** (for example after `conda activate pleiades_asp` or `micromamba activate pleiades_asp`):
 
-```bash
+\`\`\`bash
 python --version
 pleiades-workflow-info
-asp-version             # active main ASP release (3.3.0 by default)
-asp-doctor              # checks the main ASP runtime
-```
+asp-version                 # active main ASP release (3.3.0 by default)
+asp-doctor                  # checks the main ASP runtime
+bundle_adjust --version     # verifies the main ASP tools
+point2las --version         # verifies the ASP 3.5.0 companion
+\`\`\`
 
-**Optional ASP 3.5.0 companion check (LAZ export):** WASA-DEM can use **ASP 3.3.0 for stereo/DSM processing** alongside **ASP 3.5.0 for `point2las`** within the same Python environment. On Linux, the full installer preinstalls the ASP 3.5.0 companion; on installations where it is missing (for example, earlier installs or some other platforms), it is downloaded on first use. To download it if needed and verify the LAS tool, run:
-
-```bash
-point2las --version
-point2las --help
-```
-
-These commands reuse the already installed ASP 3.5.0 companion after a successful new Linux installation; otherwise they may trigger a download and require an internet connection. `asp-version` will still report **3.3.0**, because the main workflow version is unchanged; the optional companion does not replace it.
-
-A functional launch of the Jupyter interface and a successful ASP environment check are stronger evidence than the presence of a desktop shortcut alone. If a verification command fails, keep the error log and troubleshoot it before running processing jobs.
+If the optional companion is not already installed, the `point2las` check may download it on first use. If any command fails, keep the error output for troubleshooting.
 
 ---
 
