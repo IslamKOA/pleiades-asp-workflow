@@ -25,9 +25,21 @@ esac
 exec $exe_q lab --no-browser --port="\$port" --ServerApp.root_dir=$workspace_q --ServerApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb --LabApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb "\$@"
 EOF
 chmod 755 "$HOME/.local/bin/wasa-dem"
+
+# Ensure the short command is available in future Bash sessions.
+# Idempotent: do not append duplicate PATH entries.
+path_line='export PATH="$HOME/.local/bin:$PATH"'
+for rc in "$HOME/.bashrc" "$HOME/.profile"; do
+  [[ -f "$rc" ]] || touch "$rc"
+  if ! grep -Fqx "$path_line" "$rc"; then
+    printf '\n# WASA-DEM command\n%s\n' "$path_line" >> "$rc"
+  fi
+done
 if ! grep -Fq -- "--LabApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb" "$HOME/.local/bin/wasa-dem"; then
   echo "[FAIL] WASA-DEM launcher did not configure direct notebook opening." >&2
   exit 1
 fi
 echo "[OK] WASA-DEM terminal launcher: $HOME/.local/bin/wasa-dem"
 echo "[OK] Launcher will open Pleiades_ASP_Workflow.ipynb directly."
+echo "[OK] wasa-dem command configured for new Bash sessions."
+echo "[INFO] In this existing terminal, run: export PATH=\"\$HOME/.local/bin:\$PATH\""
