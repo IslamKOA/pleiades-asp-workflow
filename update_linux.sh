@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lightweight Linux update: package + shortcut only. ASP, dependencies, notebooks unchanged by default.
+# Linux update: refresh package and managed workspace files; preserve user data and ASP.
 set -euo pipefail
 python_exe="${WASA_DEM_PYTHON:-}"
 if [[ -z "$python_exe" && "${CONDA_DEFAULT_ENV:-}" == "pleiades_asp" ]]; then
@@ -55,11 +55,24 @@ fi
 [[ -n "$python_exe" && -x "$python_exe" ]] || { echo "WASA-DEM: no usable pleiades_asp environment found. To create it automatically, run the README Linux Install command; to use an external prefix set WASA_DEM_PYTHON=/full/path/bin/python." >&2; exit 1; }
 echo "WASA-DEM: updating Python package without reinstalling dependencies or ASP."
 "$python_exe" -m pip install --upgrade --force-reinstall --no-deps   "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
-if [[ "${1:-}" == "--refresh-notebooks" ]]; then
-    workspace="${WASA_DEM_WORKSPACE:-$HOME/Pleiades_ASP_Workflow}"
-    echo "WASA-DEM: refreshing managed notebooks (back up custom edits first): $workspace"
-    "$(dirname "$python_exe")/pleiades-workflow-init" "$workspace"
+workspace="${WASA_DEM_WORKSPACE:-$HOME/Pleiades_ASP_Workflow}"
+initializer="$(dirname "$python_exe")/pleiades-workflow-init"
+[[ -x "$initializer" ]] || { echo "[FAIL] Workspace initializer missing: $initializer" >&2; exit 1; }
+if [[ -d "$workspace" ]]; then
+  backup="$workspace/notebook_backups/before-update-$(date +%Y%m%d-%H%M%S)"
+  for relative in "Pleiades_ASP_Workflow.ipynb" "coregistration/Coregistration_Process-Final-withPlannimetric.ipynb" "point_density/08_Optional_LAZ_Export_and_Point_Density.ipynb"; do
+    if [[ -f "$workspace/$relative" ]]; then
+      mkdir -p "$(dirname "$backup/$relative")"
+      cp -p "$workspace/$relative" "$backup/$relative"
+    fi
+  done
+  echo "[OK] Previous notebooks backed up under: $backup"
 fi
+echo "WASA-DEM: refreshing package-managed notebooks and Python resources..."
+"$initializer" "$workspace"
+[[ -f "$workspace/Pleiades_ASP_Workflow.ipynb" ]] || { echo "[FAIL] Main notebook missing after workspace refresh." >&2; exit 1; }
+echo "[OK] Package-managed notebooks and interface resources refreshed."
+
 launcher_helper="$(mktemp)"
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/setup_linux_command.sh -o "$launcher_helper"
@@ -73,5 +86,5 @@ if [[ -s "$launcher_helper" ]]; then
 fi
 rm -f "$launcher_helper"
 [[ -x "$HOME/.local/bin/wasa-dem" ]] || { echo "[FAIL] WASA-DEM launcher was not created." >&2; exit 1; }
-echo "[OK] WASA-DEM lightweight update complete; launcher refreshed."
+echo "[OK] WASA-DEM update complete; package, notebooks, and launcher refreshed."
 echo "Launch WASA-DEM with: $HOME/.local/bin/wasa-dem"
