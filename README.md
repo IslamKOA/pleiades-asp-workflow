@@ -134,7 +134,7 @@ curl -fsSL https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main
 wget -qO install_linux.sh https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_linux.sh && PLEIADES_ASP_VERSION=3.3.0 bash install_linux.sh
 ```
 
-The installer checks Conda first, then Micromamba/Mamba; if no usable manager is available, it installs Micromamba automatically. The Linux ASP install step streams its download progress directly (percentage and transferred MiB when the server reports file size); if the ASP archive is already cached, the download is skipped. Conda/Python package installation output is managed by their own installers. It creates or reuses `pleiades_asp`, downloads WASA-DEM from GitHub without requiring Git, and installs/verifies the selected ASP version. The optional `point2las` export uses a separate ASP 3.5.0 companion on first use when the main ASP is 3.3.0 or 3.4.0. The installer preserves research data and customized notebooks and creates a simple `~/.local/bin/wasa-dem` launch command.
+The installer checks Conda first, then Micromamba/Mamba; if no usable manager is available, it installs Micromamba automatically. The Linux ASP install step streams its download progress directly (percentage and transferred MiB when the server reports file size); if the ASP archive is already cached, the download is skipped. Conda/Python package installation output is managed by their own installers. It creates or reuses `pleiades_asp`, downloads WASA-DEM from GitHub without requiring Git, and installs/verifies the selected ASP version. The Linux installer also downloads and verifies the separate ASP 3.5.0 companion for optional `point2las`/LAZ export, without changing the selected main ASP release. Therefore, a first LAZ export should not trigger another ASP download after a successful full Linux installation. The installer preserves research data and customized notebooks and creates a simple `~/.local/bin/wasa-dem` launch command.
 
 ### Linux — Update
 
@@ -198,14 +198,14 @@ asp-version             # active main ASP release (3.3.0 by default)
 asp-doctor              # checks the main ASP runtime
 ```
 
-**Optional ASP 3.5.0 companion check (LAZ export):** WASA-DEM can use **ASP 3.3.0 for stereo/DSM processing** alongside **ASP 3.5.0 for `point2las`** within the same Python environment. The ASP 3.5.0 companion is installed separately **on first use**, not during the standard installation. To download it if needed and verify the LAS tool, run:
+**Optional ASP 3.5.0 companion check (LAZ export):** WASA-DEM can use **ASP 3.3.0 for stereo/DSM processing** alongside **ASP 3.5.0 for `point2las`** within the same Python environment. On Linux, the full installer preinstalls the ASP 3.5.0 companion; on installations where it is missing (for example, earlier installs or some other platforms), it is downloaded on first use. To download it if needed and verify the LAS tool, run:
 
 ```bash
 point2las --version
 point2las --help
 ```
 
-These commands may trigger an ASP 3.5.0 download and require an internet connection. `asp-version` will still report **3.3.0**, because the main workflow version is unchanged; the optional companion does not replace it.
+These commands reuse the already installed ASP 3.5.0 companion after a successful new Linux installation; otherwise they may trigger a download and require an internet connection. `asp-version` will still report **3.3.0**, because the main workflow version is unchanged; the optional companion does not replace it.
 
 A functional launch of the Jupyter interface and a successful ASP environment check are stronger evidence than the presence of a desktop shortcut alone. If a verification command fails, keep the error log and troubleshoot it before running processing jobs.
 
