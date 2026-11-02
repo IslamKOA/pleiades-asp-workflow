@@ -177,7 +177,14 @@ fi
 rm -f "$launcher_helper"
 
 ok "WASA-DEM installation complete. All required checks passed."
-say "Launch WASA-DEM with:"
-printf '  %q\n' "$HOME/.local/bin/wasa-dem"
-say "No Conda activation or notebook path required."
+say "Launch WASA-DEM:"
+if [[ ":$PATH:" == *":$HOME/.local/bin:"* ]]; then
+  printf '  wasa-dem\n'
+else
+  printf '  %q\n' "$HOME/.local/bin/wasa-dem"
+  printf '  To enable the shorter command in this shell: export PATH="$HOME/.local/bin:$PATH"\n'
+fi
+say "Conda activation is not needed for the wasa-dem launcher."
+say "Optional manual launch: activate $ENV_NAME first, then run:"
+printf '  jupyter lab "%s/Pleiades_ASP_Workflow.ipynb"\n' "$WORKSPACE"
 say "If no local browser exists, Jupyter still starts; open its URL in a browser on a reachable computer."
