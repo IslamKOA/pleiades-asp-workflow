@@ -76,9 +76,20 @@ This is the **one standard command sequence** for installing WASA-DEM. It instal
 
 ### Windows — update an existing installation
 
-**Recommended:** Run the **same full installer above** again to update WASA-DEM or repair missing components. It reuses existing environments where possible and refreshes the desktop shortcut.
+**Recommended for an existing working installation: lightweight update.** Close JupyterLab and stop any running WASA-DEM processing, then open **Windows PowerShell** and run:
 
-**Note:** A full update may reinstall Python dependencies and refresh package-managed notebooks. Save any customized notebook edits before updating. For a minor code-only update or an icon-only refresh, see the repository scripts [`install_windows.ps1`](install_windows.ps1) and [`create_wasa_dem_shortcut.ps1`](create_wasa_dem_shortcut.ps1); these are not additional steps required for a new installation.
+```powershell
+Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/update_windows.ps1" `
+  -OutFile "$HOME\Downloads\update_windows.ps1"
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "$HOME\Downloads\update_windows.ps1"
+```
+
+This updates **only the WASA-DEM Python package** in the existing `pleiades_asp` environment. It **does not** reinstall dependencies, change ASP/WSL, re-create the environment, replace workspace notebooks, modify project data, or refresh the desktop shortcut. Restart JupyterLab after updating.
+
+**Install or repair missing components:** use the [full Windows installer](#windows--new-installation) instead. Unlike this lightweight updater, the full installer may reinstall dependencies and refresh package-managed notebooks; back up custom edits before running it.
 
 ### Linux — Install
 
