@@ -326,12 +326,18 @@ def init_cli() -> None:
     print("")
 
     print(
-        "Open the interface with:"
+        "Open WASA-DEM after installation with:"
     )
-
-    print(
-        f'  jupyter lab "{notebook}"'
-    )
+    print("  wasa-dem  (if ~/.local/bin is in PATH)")
+    print("  ~/.local/bin/wasa-dem  (always works with the standard Linux installer)")
+    print("")
+    print("Manual JupyterLab alternative (activate the environment first):")
+    print("  conda activate pleiades_asp  # or micromamba activate pleiades_asp")
+    if target == DEFAULT_DIRECTORY.resolve():
+        print('  jupyter lab "$HOME/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb"')
+    else:
+        import shlex
+        print(f"  jupyter lab {shlex.quote(str(notebook))}")
 
 
 def info_cli() -> None:
