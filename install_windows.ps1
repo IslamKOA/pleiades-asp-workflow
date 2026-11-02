@@ -249,25 +249,21 @@ try {
             throw 'WSL is not available. Enable WSL and rerun the installer.'
         }
         Write-Host ''
-        Write-Host 'Ubuntu will now be installed. Windows may ask for administrator approval or a restart.' -ForegroundColor Yellow
-        Write-Host 'On first use, Ubuntu may ask you to choose a Linux username and password.' -ForegroundColor Yellow
-        Write-Host 'Once you see a Linux prompt (for example user@computer:$), type exit.' -ForegroundColor Yellow
-        Write-Host 'The Windows installer will then continue automatically to ASP installation.' -ForegroundColor Yellow
-        Write-Host ''
-        # WSL setup may print nonfatal status to stderr, or request elevation/
-        # a reboot. Do not let PowerShell's Stop preference turn native stderr
-        # into an unhandled exception before we can give recovery instructions.
+        Write-Host 'Installing Ubuntu without opening an interactive Linux shell...' -ForegroundColor Yellow
+        Write-Host 'Windows may still require administrator approval or a restart.' -ForegroundColor Yellow
+        # Microsoft's --no-launch option avoids the interactive Linux prompt
+        # that previously trapped the installer waiting for the user to type exit.
         $previousErrorAction = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
-            & wsl.exe --install -d Ubuntu
+            & wsl.exe --install -d Ubuntu --no-launch
             $wslInstallExit = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $previousErrorAction
         }
         $distro = Find-UsableWslDistro
         if (-not $distro) {
-            throw 'WSL features were installed, but Ubuntu is not ready until Windows is restarted. Restart Windows, open Ubuntu once to complete first-run setup, then rerun the same install_windows.ps1 command from the README. Your WASA-DEM Python environment will be reused; do not delete it.'
+            throw 'WSL features were installed, but Ubuntu is not ready until Windows is restarted. Restart Windows, then rerun the same install_windows.ps1 command from the README. No interactive Ubuntu launch is required. Your WASA-DEM Python environment will be reused; do not delete it.'
         }
         if ($wslInstallExit -ne 0) {
             Write-Warning "Ubuntu installer returned $wslInstallExit, but '$distro' is now registered; checking usability."
@@ -275,7 +271,9 @@ try {
     }
     $env:PLEIADES_ASP_WSL_DISTRO = $distro
     [Environment]::SetEnvironmentVariable('PLEIADES_ASP_WSL_DISTRO', $distro, 'User')
-    & wsl.exe -d $distro -- sh -lc 'printf "WSL home: %s\n" "$HOME"'
+    # First launch is a bounded command, not an interactive shell. A freshly
+    # installed distro can be initialized as root without asking for a password.
+    & wsl.exe -d $distro -u root -- sh -lc 'printf "WSL initialization complete. Home: %s\\n" "$HOME"'
     Assert-ExitCode 'Initialize WSL'
 
     # 5. Install or verify the managed Linux ASP distribution.
