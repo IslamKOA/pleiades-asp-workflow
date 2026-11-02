@@ -168,7 +168,7 @@ For Micromamba/Mamba, substitute the corresponding manager command.
 ~/.local/bin/wasa-dem
 ```
 
-The installer and updater automatically create or refresh this terminal launcher using the correct `pleiades_asp` environment. It passes `Pleiades_ASP_Workflow.ipynb` directly to JupyterLab (the original Linux notebook-opening method), sets the workspace root and the `/lab/tree/Pleiades_ASP_Workflow.ipynb` fallback URL, and adds the environment commands to `PATH`. No Linux desktop icon or shortcut is needed. The logo in this README is only for project identification. If there is no local web browser, open the Jupyter URL from a browser that can reach your server.
+The installer and updater automatically create or refresh this terminal launcher using the correct `pleiades_asp` environment. It configures JupyterLab's `LabApp.default_url` to `/lab/tree/Pleiades_ASP_Workflow.ipynb`, sets the workspace root, and adds the environment commands to `PATH`. An already open browser tab at `/lab` must be navigated to the notebook URL manually, since a new launcher cannot redirect an existing tab. No Linux desktop icon or shortcut is needed. The logo in this README is only for project identification. If there is no local web browser, open the Jupyter URL from a browser that can reach your server.
 
 In JupyterLab, open `Pleiades_ASP_Workflow.ipynb` and click **▶ Start WASA-DEM**. The default `Pleiades_ASP_Workflow/` folder and Python package name remain unchanged for compatibility.
 
