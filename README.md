@@ -61,9 +61,7 @@ The recommended installers support Python **3.10+** (Python 3.11 for a new envir
 
 ### Windows — new installation
 
-Requirements: Windows 10/11 (64-bit), PowerShell, internet access, and permission to enable **WSL/Ubuntu** if not installed. First-time WSL setup may require administrator approval, a restart, and creation of a Linux user.
-
-Open **Windows PowerShell** and run:
+**Recommended: full installation with all required features.** On Windows 10/11 (64-bit), open **Windows PowerShell** and run:
 
 ```powershell
 Invoke-WebRequest `
@@ -74,48 +72,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$HOME\Downloads\install_windows.ps1"
 ```
 
-The installer checks available environment managers, reuses an existing `pleiades_asp` environment or creates it with Python 3.11, installs WASA-DEM and required Python dependencies, sets up/verifies WSL and ASP, prepares JupyterLab, and creates the **WASA-DEM** desktop shortcut with the official square logo from GitHub (without the lower terrain). The interface runs under Windows, while ASP processing uses WSL.
-
-The optional [first-time helper](install_windows_first_time.ps1) now calls **the same standard installer**; you do **not** need to run both scripts.
+This is the **one standard command sequence** for installing WASA-DEM. It installs or reuses the `pleiades_asp` Python environment, installs the workflow and JupyterLab, checks or sets up WSL/Ubuntu for NASA ASP processing, and creates the Windows desktop shortcut. WSL setup may require administrator approval, Ubuntu first-run initialization, or a Windows restart; rerun the same installer afterward if necessary. The optional `install_windows_first_time.ps1` helper calls this same installer; **do not run both**.
 
 ### Windows — update an existing installation
 
-**Recommended for repairing installations or installing missing dependencies:** download and rerun the latest standard installer. It reuses a working `pleiades_asp` environment and refreshes the desktop shortcut and icon.
+**Recommended:** Run the **same full installer above** again to update WASA-DEM or repair missing components. It reuses existing environments where possible and refreshes the desktop shortcut.
 
-```powershell
-Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/install_windows.ps1" `
-  -OutFile "$HOME\Downloads\install_windows.ps1"
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File "$HOME\Downloads\install_windows.ps1"
-```
-
-**Important:** The current full Windows installer uses `pip install --upgrade --force-reinstall`, which can reinstall/update Python dependencies. It also checks ASP and overwrites **package-managed** notebook resources. Back up notebook edits first; the full installer is useful for repairs but is not a minimal code-only update.
-
-**Advanced: refresh WASA-DEM code without reinstalling dependencies or ASP** (only when your environment is already working). For an existing **Conda** installation:
-
-```powershell
-conda run -n pleiades_asp python -m pip install --upgrade --force-reinstall --no-deps "https://github.com/IslamKOA/pleiades-asp-workflow/archive/refs/heads/main.zip"
-conda run -n pleiades_asp pleiades-workflow-init
-```
-
-For an existing **Micromamba** or **Mamba** environment, replace `conda run` with `micromamba run` or `mamba run`, respectively. The manager must be accessible in PowerShell; otherwise use the standard installer, which searches known installation paths. The lightweight commands **do not** install ASP, WSL, or missing dependencies. Initializing the workspace still replaces package-managed notebooks.
-
-**Shortcut/icon only:** if the environment is already working, run [the shortcut creator](create_wasa_dem_shortcut.ps1) alone. It automatically downloads the current WASA-DEM icon from GitHub when the image is not beside the script:
-
-```powershell
-Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/create_wasa_dem_shortcut.ps1" `
-  -OutFile "$HOME\Downloads\create_wasa_dem_shortcut.ps1"
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File "$HOME\Downloads\create_wasa_dem_shortcut.ps1"
-```
-
-If you encountered `SyntaxError: '(' was never closed` during the old `Verify environment Python` step, download the **latest** installer again: the Windows Conda quoting bug has been corrected. Do not remove the existing Python environment.
-
-**ASP version:** To request a different main ASP version in the Windows full installer, set `$env:PLEIADES_ASP_VERSION = "3.4.0"` before launching it. The optional LAS/LAZ tools remain separate.
+**Note:** A full update may reinstall Python dependencies and refresh package-managed notebooks. Save any customized notebook edits before updating. For a minor code-only update or an icon-only refresh, see the repository scripts [`install_windows.ps1`](install_windows.ps1) and [`create_wasa_dem_shortcut.ps1`](create_wasa_dem_shortcut.ps1); these are not additional steps required for a new installation.
 
 ### Linux — Install
 
