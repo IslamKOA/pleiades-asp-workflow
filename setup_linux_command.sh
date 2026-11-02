@@ -15,7 +15,7 @@ printf -v bin_q '%q' "$(dirname "$python_exe")"
 cat > "$HOME/.local/bin/wasa-dem" <<EOF
 #!/usr/bin/env bash
 export PATH=$bin_q:"\$PATH"
-exec $exe_q lab --ServerApp.root_dir=$workspace_q --ServerApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb "\$@"
+exec $exe_q lab $workspace_q/Pleiades_ASP_Workflow.ipynb --ServerApp.root_dir=$workspace_q --ServerApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb "\$@"
 EOF
 chmod 755 "$HOME/.local/bin/wasa-dem"
 if ! grep -Fq -- "--ServerApp.default_url=/lab/tree/Pleiades_ASP_Workflow.ipynb" "$HOME/.local/bin/wasa-dem"; then
