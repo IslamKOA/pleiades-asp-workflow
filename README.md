@@ -162,7 +162,7 @@ conda run -n pleiades_asp jupyter lab "$HOME\Pleiades_ASP_Workflow\Pleiades_ASP_
 
 For Micromamba/Mamba, substitute the corresponding manager command.
 
-**Linux (recommended):** if `~/.local/bin` is in your `PATH`, launch from any directory with:
+**Linux (recommended):** the installer and updater automatically add `~/.local/bin` to the Bash startup `PATH` (in `~/.bashrc` and `~/.profile`). Open a **new Bash terminal** after installation, then launch from any directory with:
 
 ```bash
 wasa-dem
@@ -181,7 +181,7 @@ conda activate pleiades_asp
 jupyter lab "$HOME/Pleiades_ASP_Workflow/Pleiades_ASP_Workflow.ipynb"
 ```
 
-For Micromamba, use `micromamba activate pleiades_asp`. If you want the shorter command for the current shell, use `export PATH="$HOME/.local/bin:$PATH"`; this does not permanently modify your shell configuration. For remote servers, the recommended `wasa-dem` command also configures the tested notebook URL and `--no-browser` behavior.
+For Micromamba, use `micromamba activate pleiades_asp`. The installer cannot modify the environment of the shell already running it. To use the short command **immediately in that same terminal**, run `export PATH="$HOME/.local/bin:$PATH"` once; new Bash sessions will already have the change. For non-Bash shells, configure the corresponding startup file manually. For remote servers, the recommended `wasa-dem` command also configures the tested notebook URL and `--no-browser` behavior.
 
 The installer and updater automatically create or refresh this terminal launcher using the correct `pleiades_asp` environment. The Linux command now reproduces the remote-server launch verified on `ige-calcul4`: `jupyter lab --no-browser --port=8890`, with the workspace root and both Jupyter Server and JupyterLab startup URLs targeting `/lab/tree/Pleiades_ASP_Workflow.ipynb`. **Port 8890 is the default, not mandatory**: use `WASA_DEM_PORT=8891 ~/.local/bin/wasa-dem` for a different port. Jupyter prints the notebook URL (and authentication token) in the terminal; because `--no-browser` is used for remote systems, open that URL in your local browser through an SSH tunnel for the chosen port. An already open tab at `/lab` is not redirected automatically. No Linux desktop icon or shortcut is needed. The logo in this README is only for project identification.
 
