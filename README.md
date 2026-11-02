@@ -194,14 +194,14 @@ Once the notebook opens in JupyterLab, click **▶ Start WASA-DEM**. The default
 
 Run these **inside the `pleiades_asp` environment** (for example after `conda activate pleiades_asp` or `micromamba activate pleiades_asp`):
 
-\`\`\`bash
+```bash
 python --version
 pleiades-workflow-info
 asp-version                 # active main ASP release (3.3.0 by default)
 asp-doctor                  # checks the main ASP runtime
 bundle_adjust --version     # verifies the main ASP tools
 point2las --version         # verifies the ASP 3.5.0 companion
-\`\`\`
+```
 
 If the optional companion is not already installed, the `point2las` check may download it on first use. If any command fails, keep the error output for troubleshooting.
 
