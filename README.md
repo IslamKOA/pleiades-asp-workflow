@@ -87,7 +87,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$HOME\Downloads\update_windows_v2.ps1"
 ```
 
-This updates the **WASA-DEM Python package and package-managed notebooks/interface resources automatically**, including future logo and UI changes. Before replacing notebooks, it saves copies of the existing main, co-registration, and point-density notebooks under `Pleiades_ASP_Workflow/notebook_backups/`. It does **not** reinstall dependencies, modify ASP/WSL, re-create the Conda environment, delete research datasets or project outputs, or change the desktop shortcut. Close JupyterLab before updating, then reopen it afterward.
+This updates the **WASA-DEM Python package and package-managed notebooks/interface resources automatically**, including future logo and UI changes. Before replacing notebooks, it saves copies of the existing main, co-registration, and point-density notebooks under `Pleiades_ASP_Workflow/notebook_backups/`. It **creates or repairs the WASA-DEM desktop shortcut** for existing users. It does not reinstall dependencies, modify ASP/WSL, re-create the Conda environment, or delete research datasets or project outputs. Close JupyterLab before updating, then reopen it afterward.
 
 **Install or repair missing components:** use the [full Windows installer](#windows--new-installation) instead. The full installer may reinstall Python dependencies.
 
