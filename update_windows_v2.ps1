@@ -99,6 +99,23 @@ if (-not (Test-Path -LiteralPath $initializer -PathType Leaf)) {
 & $initializer
 if ($LASTEXITCODE -ne 0) { throw 'WASA-DEM notebook/workspace refresh failed.' }
 Write-Host '[OK] Package-managed notebooks and interface resources refreshed.'
+# Repair the desktop shortcut for existing users without reinstalling ASP/WSL.
+Write-Host 'Creating or repairing the WASA-DEM desktop shortcut...'
+$shortcutScript = Join-Path $env:TEMP ('wasa-dem-shortcut-' + [Guid]::NewGuid().ToString('N') + '.ps1')
+try {
+    Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/IslamKOA/pleiades-asp-workflow/main/create_wasa_dem_shortcut.ps1' -OutFile $shortcutScript -UseBasicParsing
+    & $shortcutScript -Workspace $workspace -EnvironmentName $EnvironmentName
+    $shortcut = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'WASA-DEM.lnk'
+    if (-not (Test-Path -LiteralPath $shortcut -PathType Leaf)) {
+        throw "Desktop shortcut not found after creation: $shortcut"
+    }
+    Write-Host "[OK] Desktop shortcut ready: $shortcut" -ForegroundColor Green
+} catch {
+    Write-Warning ('Desktop shortcut could not be created: ' + $_.Exception.Message)
+    Write-Warning 'The Python package and workspace are updated; shortcut setup can be retried separately.'
+} finally {
+    Remove-Item -LiteralPath $shortcutScript -Force -ErrorAction SilentlyContinue
+}
 Write-Host '[OK] WASA-DEM Python package updated.' -ForegroundColor Green
-Write-Host 'Dependencies, ASP, WSL, Conda environment, and desktop shortcut were left unchanged.'
+Write-Host 'Dependencies, ASP, WSL, and Conda environment were left unchanged.'
 Write-Host 'Restart JupyterLab to use the updated package.'
