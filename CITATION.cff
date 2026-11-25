@@ -1,8 +1,9 @@
 cff-version: 1.2.0
 
 message: >-
-  If you use this software, please cite the archived research software using
-  the DOI provided below. 
+  If you use this workflow in research, please cite the published journal article
+  listed as the preferred citation. To identify the archived software release,
+  also cite the software DOI below.
 
 title: "Pléiades ASP Workflow"
 
@@ -47,3 +48,19 @@ keywords:
   - "digital surface model"
   - "satellite photogrammetry"
   - "reproducible workflow"
+
+preferred-citation:
+  type: article
+  title: "A Reproducible End-to-End Ames Stereo Pipeline Workflow for Generating Pléiades Tri-Stereo DSMs in High-Relief Terrain"
+  authors:
+    - family-names: "Koa"
+      given-names: "Islam"
+    - family-names: "Recking"
+      given-names: "Alain"
+    - family-names: "Borgniet"
+      given-names: "Laurent"
+  journal: "Earth and Space Science"
+  year: 2026
+  date-published: "2026-11-23"
+  doi: "10.1029/2026EA005464"
+  url: "https://agupubs.onlinelibrary.wiley.com/doi/10.1029/2026EA005464"
