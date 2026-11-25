@@ -500,9 +500,13 @@ See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for attribution and redis
 
 **WASA-DEM** is the current software name. The DOI below identifies the original archived **Pléiades ASP Workflow v1.5.4** and should retain its published title when cited.
 
-### Associated manuscript
+### Published research article
 
-> **Koa, I., Recking, A., & Borgniet, L.** *A Reproducible End-to-End Ames Stereo Pipeline Workflow for Generating Pléiades Tri-Stereo DSMs in High-Relief Terrain*. Manuscript under revision for **Earth and Space Science (AGU)**.
+> **Koa, I., Recking, A., & Borgniet, L. (2026).** A reproducible end-to-end Ames Stereo Pipeline workflow for generating Pléiades tri-stereo DSMs in high-relief terrain. *Earth and Space Science*. **https://doi.org/10.1029/2026EA005464**
+
+[Read the peer-reviewed article in *Earth and Space Science* (AGU/Wiley)](https://agupubs.onlinelibrary.wiley.com/doi/10.1029/2026EA005464).
+
+For scientific use of the workflow, cite the published article above. To reference the specific archived software release, also cite the research software DOI below.
 
 ### Research software
 
