@@ -20,6 +20,8 @@ For reproducibility of the associated study, the reference processing version is
 
 **Discover WASA-DEM:** Developed by **Islam KOA (IslamKOA)**, this reproducible satellite photogrammetry software supports optical stereo and tri-stereo 3D terrain reconstruction, Pléiades/Pléiades NEO/SPOT 6/7 imagery, NASA Ames Stereo Pipeline (ASP), point clouds, digital surface models (DSMs), mountain topography, and geomorphology applications. [Developer profile](https://github.com/IslamKOA) · [Citable archive](https://doi.org/10.57745/4OQDHQ).
 
+**Peer-reviewed publication (2026):** Koa, I., Recking, A., & Borgniet, L. *A Reproducible End-to-End Ames Stereo Pipeline Workflow for Generating Pléiades Tri-Stereo DSMs in High-Relief Terrain*. **Earth and Space Science**. [https://doi.org/10.1029/2026EA005464](https://doi.org/10.1029/2026EA005464). For research using WASA-DEM, see the [recommended citation](#citation) below.
+
 **Community and reproducibility:** [Report an issue](https://github.com/IslamKOA/pleiades-asp-workflow/issues) · [Contributing guidelines](CONTRIBUTING.md) · [How to cite this software](CITATION.cff)
 
 ## What this package provides
